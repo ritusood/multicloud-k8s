@@ -26,6 +26,7 @@ function install_dependencies {
 
 # install_vfw_scripts() -
 function install_vfw_scripts {
+    local version=$(cat /opt/config/demo_artifacts_version.txt)
     pushd /opt
     wget -q "https://nexus.onap.org/content/repositories/staging/org/onap/demo/vnf/vfw/vfw-scripts/${version}/vfw-scripts-${version}.zip"
     unzip "vfw-scripts-${version}.zip"
