@@ -21,10 +21,10 @@ import (
 	"reflect"
 	"testing"
 
-	utils "k8splugin/internal"
-	"k8splugin/internal/connection"
-	"k8splugin/internal/db"
-	"k8splugin/internal/helm"
+	utils "github.com/onap/multicloud-k8s/src/k8splugin/internal"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/connection"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/db"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/helm"
 
 	pkgerrors "github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -42,7 +42,7 @@ func LoadMockPlugins(krdLoadedPlugins map[string]*plugin.Plugin) error {
 	}
 
 	krdLoadedPlugins["namespace"] = mockPlugin
-	krdLoadedPlugins["deployment"] = mockPlugin
+	krdLoadedPlugins["generic"] = mockPlugin
 	krdLoadedPlugins["service"] = mockPlugin
 
 	return nil
@@ -72,7 +72,7 @@ func TestInit(t *testing.T) {
 
 		kubeClient := KubernetesClient{}
 		// Refer to the connection via its name
-		err = kubeClient.init("mock_connection")
+		err = kubeClient.init("mock_connection", "abcdefg")
 		if err != nil {
 			t.Fatalf("TestGetKubeClient returned an error (%s)", err)
 		}

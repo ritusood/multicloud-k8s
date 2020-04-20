@@ -26,20 +26,19 @@ import (
 // Configuration loads up all the values that are used to configure
 // backend implementations
 type Configuration struct {
-	CAFile            string `json:"ca-file"`
-	ServerCert        string `json:"server-cert"`
-	ServerKey         string `json:"server-key"`
-	Password          string `json:"password"`
-	DatabaseAddress   string `json:"database-address"`
-	DatabaseType      string `json:"database-type"`
-	PluginDir         string `json:"plugin-dir"`
-	EtcdIP            string `json:"etcd-ip"`
-	EtcdCert          string `json:"etcd-cert"`
-	EtcdKey           string `json:"etcd-key"`
-	EtcdCAFile        string `json:"etcd-ca-file"`
-	KubeConfigDir     string `json:"kube-config-dir"`
-	OVNCentralAddress string `json:"ovn-central-address"`
-	ServicePort       string `json:"service-port"`
+	CAFile              string `json:"ca-file"`
+	ServerCert          string `json:"server-cert"`
+	ServerKey           string `json:"server-key"`
+	Password            string `json:"password"`
+	DatabaseAddress     string `json:"database-address"`
+	DatabaseType        string `json:"database-type"`
+	PluginDir           string `json:"plugin-dir"`
+	EtcdIP              string `json:"etcd-ip"`
+	EtcdCert            string `json:"etcd-cert"`
+	EtcdKey             string `json:"etcd-key"`
+	EtcdCAFile          string `json:"etcd-ca-file"`
+	ServicePort         string `json:"service-port"`
+	KubernetesLabelName string `json:"kubernetes-label-name"`
 }
 
 // Config is the structure that stores the configuration
@@ -75,20 +74,19 @@ func defaultConfiguration() *Configuration {
 	}
 
 	return &Configuration{
-		CAFile:            "ca.cert",
-		ServerCert:        "server.cert",
-		ServerKey:         "server.key",
-		Password:          "",
-		DatabaseAddress:   "127.0.0.1",
-		DatabaseType:      "mongo",
-		PluginDir:         cwd,
-		EtcdIP:            "127.0.0.1",
-		EtcdCert:          "etcd.cert",
-		EtcdKey:           "etcd.key",
-		EtcdCAFile:        "etcd-ca.cert",
-		KubeConfigDir:     cwd,
-		OVNCentralAddress: "127.0.0.1",
-		ServicePort:       "9015",
+		CAFile:              "ca.cert",
+		ServerCert:          "server.cert",
+		ServerKey:           "server.key",
+		Password:            "",
+		DatabaseAddress:     "127.0.0.1",
+		DatabaseType:        "mongo",
+		PluginDir:           cwd,
+		EtcdIP:              "127.0.0.1",
+		EtcdCert:            "",
+		EtcdKey:             "",
+		EtcdCAFile:          "",
+		ServicePort:         "9015",
+		KubernetesLabelName: "k8splugin.io/rb-instance-id",
 	}
 }
 

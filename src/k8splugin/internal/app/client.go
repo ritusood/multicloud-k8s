@@ -14,42 +14,41 @@ limitations under the License.
 package app
 
 import (
-	"log"
 	"os"
 	"strings"
+	"time"
 
-	utils "k8splugin/internal"
-	"k8splugin/internal/config"
-	"k8splugin/internal/connection"
-	"k8splugin/internal/helm"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/connection"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/helm"
+	log "github.com/onap/multicloud-k8s/src/k8splugin/internal/logutils"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/plugin"
 
 	pkgerrors "github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/client-go/discovery"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery/cached/disk"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// PluginReference is the interface that is implemented
-type PluginReference interface {
-	Create(yamlFilePath string, namespace string, client *KubernetesClient) (string, error)
-	Delete(resource helm.KubernetesResource, namespace string, client *KubernetesClient) error
-}
-
+// KubernetesClient encapsulates the different clients' interfaces
+// we need when interacting with a Kubernetes cluster
 type KubernetesClient struct {
-	clientSet      *kubernetes.Clientset
+	clientSet      kubernetes.Interface
 	dynamicClient  dynamic.Interface
-	discoverClient *discovery.DiscoveryClient
+	discoverClient *disk.CachedDiscoveryClient
 	restMapper     meta.RESTMapper
+	instanceID     string
 }
 
 // getKubeConfig uses the connectivity client to get the kubeconfig based on the name
 // of the cloudregion. This is written out to a file.
 func (k *KubernetesClient) getKubeConfig(cloudregion string) (string, error) {
+
 	conn := connection.NewConnectionClient()
-	kubeConfigPath, err := conn.Download(cloudregion, config.GetConfiguration().KubeConfigDir)
+	kubeConfigPath, err := conn.Download(cloudregion)
 	if err != nil {
 		return "", pkgerrors.Wrap(err, "Downloading kubeconfig")
 	}
@@ -58,10 +57,16 @@ func (k *KubernetesClient) getKubeConfig(cloudregion string) (string, error) {
 }
 
 // init loads the Kubernetes configuation values stored into the local configuration file
-func (k *KubernetesClient) init(cloudregion string) error {
+func (k *KubernetesClient) init(cloudregion string, iid string) error {
 	if cloudregion == "" {
 		return pkgerrors.New("Cloudregion is empty")
 	}
+
+	if iid == "" {
+		return pkgerrors.New("Instance ID is empty")
+	}
+
+	k.instanceID = iid
 
 	configPath, err := k.getKubeConfig(cloudregion)
 	if err != nil {
@@ -86,125 +91,90 @@ func (k *KubernetesClient) init(cloudregion string) error {
 		return pkgerrors.Wrap(err, "Creating dynamic client")
 	}
 
-	k.discoverClient, err = discovery.NewDiscoveryClientForConfig(config)
+	k.discoverClient, err = disk.NewCachedDiscoveryClientForConfig(config, os.TempDir(), "", 10*time.Minute)
 	if err != nil {
 		return pkgerrors.Wrap(err, "Creating discovery client")
 	}
+
+	k.restMapper = restmapper.NewDeferredDiscoveryRESTMapper(k.discoverClient)
 
 	return nil
 }
 
 func (k *KubernetesClient) ensureNamespace(namespace string) error {
-	namespacePlugin, ok := utils.LoadedPlugins["namespace"]
-	if !ok {
-		return pkgerrors.New("No plugin for namespace resource found")
-	}
 
-	symGetNamespaceFunc, err := namespacePlugin.Lookup("Get")
+	pluginImpl, err := plugin.GetPluginByKind("Namespace")
 	if err != nil {
-		return pkgerrors.Wrap(err, "Error fetching get namespace function")
+		return pkgerrors.Wrap(err, "Loading Namespace Plugin")
 	}
 
-	ns, _ := symGetNamespaceFunc.(func(string, string, kubernetes.Interface) (string, error))(
-		namespace, namespace, k.clientSet)
+	ns, err := pluginImpl.Get(helm.KubernetesResource{
+		Name: namespace,
+		GVK: schema.GroupVersionKind{
+			Group:   "",
+			Version: "v1",
+			Kind:    "Namespace",
+		},
+	}, namespace, k)
+
+	// Check for errors getting the namespace while ignoring errors where the namespace does not exist
+	// Error message when namespace does not exist: "namespaces "namespace-name" not found"
+	if err != nil && strings.Contains(err.Error(), "not found") == false {
+		log.Error("Error checking for namespace", log.Fields{
+			"error":     err,
+			"namespace": namespace,
+		})
+		return pkgerrors.Wrap(err, "Error checking for namespace: "+namespace)
+	}
 
 	if ns == "" {
-		log.Println("Creating " + namespace + " namespace")
-		symGetNamespaceFunc, err := namespacePlugin.Lookup("Create")
-		if err != nil {
-			return pkgerrors.Wrap(err, "Error fetching create namespace plugin")
-		}
-		namespaceResource := &utils.ResourceData{
-			Namespace: namespace,
-		}
+		log.Info("Creating Namespace", log.Fields{
+			"namespace": namespace,
+		})
 
-		_, err = symGetNamespaceFunc.(func(*utils.ResourceData, kubernetes.Interface) (string, error))(
-			namespaceResource, k.clientSet)
+		_, err = pluginImpl.Create("", namespace, k)
 		if err != nil {
+			log.Error("Error Creating Namespace", log.Fields{
+				"error":     err,
+				"namespace": namespace,
+			})
 			return pkgerrors.Wrap(err, "Error creating "+namespace+" namespace")
 		}
 	}
 	return nil
 }
 
-func (k *KubernetesClient) createGeneric(resTempl helm.KubernetesResourceTemplate,
-	namespace string) (helm.KubernetesResource, error) {
-
-	log.Println("Processing Kind: " + resTempl.GVK.Kind)
-
-	//Check if have the mapper before loading the plugin
-	err := k.updateMapper()
-	if err != nil {
-		return helm.KubernetesResource{}, pkgerrors.Wrap(err, "Unable to create RESTMapper")
-	}
-
-	pluginObject, ok := utils.LoadedPlugins["generic"]
-	if !ok {
-		return helm.KubernetesResource{}, pkgerrors.New("No generic plugin found")
-	}
-
-	symbol, err := pluginObject.Lookup("ExportedVariable")
-	if err != nil {
-		return helm.KubernetesResource{}, pkgerrors.Wrap(err, "No ExportedVariable symbol found")
-	}
-
-	//Assert if it implements the PluginReference interface
-	genericPlugin, ok := symbol.(PluginReference)
-	if !ok {
-		return helm.KubernetesResource{}, pkgerrors.New("ExportedVariable is not PluginReference type")
-	}
-
-	if _, err := os.Stat(resTempl.FilePath); os.IsNotExist(err) {
-		return helm.KubernetesResource{}, pkgerrors.New("File " + resTempl.FilePath + "does not exists")
-	}
-
-	log.Println("Processing file: " + resTempl.FilePath)
-
-	name, err := genericPlugin.Create(resTempl.FilePath, namespace, k)
-	if err != nil {
-		return helm.KubernetesResource{}, pkgerrors.Wrap(err, "Error in generic plugin")
-	}
-
-	return helm.KubernetesResource{
-		GVK:  resTempl.GVK,
-		Name: name,
-	}, nil
-}
-
 func (k *KubernetesClient) createKind(resTempl helm.KubernetesResourceTemplate,
 	namespace string) (helm.KubernetesResource, error) {
 
-	log.Println("Processing Kind: " + resTempl.GVK.Kind)
-
 	if _, err := os.Stat(resTempl.FilePath); os.IsNotExist(err) {
 		return helm.KubernetesResource{}, pkgerrors.New("File " + resTempl.FilePath + "does not exists")
 	}
 
-	log.Println("Processing file: " + resTempl.FilePath)
+	log.Info("Processing Kubernetes Resource", log.Fields{
+		"filepath": resTempl.FilePath,
+	})
 
-	//Populate the namespace from profile instead of instance body
-	genericKubeData := &utils.ResourceData{
-		YamlFilePath: resTempl.FilePath,
-		Namespace:    namespace,
-	}
-
-	typePlugin, ok := utils.LoadedPlugins[strings.ToLower(resTempl.GVK.Kind)]
-	if !ok {
-		log.Println("No plugin for kind " + resTempl.GVK.Kind + " found. Using generic Plugin")
-		return k.createGeneric(resTempl, namespace)
-	}
-
-	symCreateResourceFunc, err := typePlugin.Lookup("Create")
+	pluginImpl, err := plugin.GetPluginByKind(resTempl.GVK.Kind)
 	if err != nil {
-		return helm.KubernetesResource{}, pkgerrors.Wrap(err, "Error fetching "+resTempl.GVK.Kind+" plugin")
+		return helm.KubernetesResource{}, pkgerrors.Wrap(err, "Error loading plugin")
 	}
 
-	createdResourceName, err := symCreateResourceFunc.(func(*utils.ResourceData, kubernetes.Interface) (string, error))(
-		genericKubeData, k.clientSet)
+	createdResourceName, err := pluginImpl.Create(resTempl.FilePath, namespace, k)
 	if err != nil {
+		log.Error("Error Creating Resource", log.Fields{
+			"error":    err,
+			"gvk":      resTempl.GVK,
+			"filepath": resTempl.FilePath,
+		})
 		return helm.KubernetesResource{}, pkgerrors.Wrap(err, "Error in plugin "+resTempl.GVK.Kind+" plugin")
 	}
-	log.Print(createdResourceName + " created")
+
+	log.Info("Created Kubernetes Resource", log.Fields{
+		"resource": createdResourceName,
+		"gvk":      resTempl.GVK,
+	})
+
 	return helm.KubernetesResource{
 		GVK:  resTempl.GVK,
 		Name: createdResourceName,
@@ -231,58 +201,20 @@ func (k *KubernetesClient) createResources(sortedTemplates []helm.KubernetesReso
 	return createdResources, nil
 }
 
-func (k *KubernetesClient) deleteGeneric(resource helm.KubernetesResource, namespace string) error {
-	log.Println("Deleting Kind: " + resource.GVK.Kind)
-
-	pluginObject, ok := utils.LoadedPlugins["generic"]
-	if !ok {
-		return pkgerrors.New("No generic plugin found")
-	}
-
-	//Check if have the mapper before loading the plugin
-	err := k.updateMapper()
-	if err != nil {
-		return pkgerrors.Wrap(err, "Unable to create RESTMapper")
-	}
-
-	symbol, err := pluginObject.Lookup("ExportedVariable")
-	if err != nil {
-		return pkgerrors.Wrap(err, "No ExportedVariable symbol found")
-	}
-
-	//Assert that it implements the PluginReference interface
-	genericPlugin, ok := symbol.(PluginReference)
-	if !ok {
-		return pkgerrors.New("ExportedVariable is not PluginReference type")
-	}
-
-	err = genericPlugin.Delete(resource, namespace, k)
-	if err != nil {
-		return pkgerrors.Wrap(err, "Error in generic plugin")
-	}
-
-	return nil
-}
-
 func (k *KubernetesClient) deleteKind(resource helm.KubernetesResource, namespace string) error {
-	log.Println("Deleting Kind: " + resource.GVK.Kind)
+	log.Warn("Deleting Resource", log.Fields{
+		"gvk":      resource.GVK,
+		"resource": resource.Name,
+	})
 
-	typePlugin, ok := utils.LoadedPlugins[strings.ToLower(resource.GVK.Kind)]
-	if !ok {
-		log.Println("No plugin for kind " + resource.GVK.Kind + " found. Using generic Plugin")
-		return k.deleteGeneric(resource, namespace)
+	pluginImpl, err := plugin.GetPluginByKind(resource.GVK.Kind)
+	if err != nil {
+		return pkgerrors.Wrap(err, "Error loading plugin")
 	}
 
-	symDeleteResourceFunc, err := typePlugin.Lookup("Delete")
+	err = pluginImpl.Delete(resource, namespace, k)
 	if err != nil {
-		return pkgerrors.Wrap(err, "Error finding Delete symbol in plugin")
-	}
-
-	log.Println("Deleting resource: " + resource.Name)
-	err = symDeleteResourceFunc.(func(string, string, kubernetes.Interface) error)(
-		resource.Name, namespace, k.clientSet)
-	if err != nil {
-		return pkgerrors.Wrap(err, "Error destroying "+resource.Name)
+		return pkgerrors.Wrap(err, "Error deleting "+resource.Name)
 	}
 
 	return nil
@@ -300,21 +232,6 @@ func (k *KubernetesClient) deleteResources(resources []helm.KubernetesResource, 
 	return nil
 }
 
-func (k *KubernetesClient) updateMapper() error {
-	//Create restMapper if not already done
-	if k.restMapper != nil {
-		return nil
-	}
-
-	groupResources, err := restmapper.GetAPIGroupResources(k.discoverClient)
-	if err != nil {
-		return pkgerrors.Wrap(err, "Get GroupResources")
-	}
-
-	k.restMapper = restmapper.NewDiscoveryRESTMapper(groupResources)
-	return nil
-}
-
 //GetMapper returns the RESTMapper that was created for this client
 func (k *KubernetesClient) GetMapper() meta.RESTMapper {
 	return k.restMapper
@@ -324,4 +241,16 @@ func (k *KubernetesClient) GetMapper() meta.RESTMapper {
 //unstructured REST calls to the apiserver
 func (k *KubernetesClient) GetDynamicClient() dynamic.Interface {
 	return k.dynamicClient
+}
+
+// GetStandardClient returns the standard client that can be used to handle
+// standard kubernetes kinds
+func (k *KubernetesClient) GetStandardClient() kubernetes.Interface {
+	return k.clientSet
+}
+
+//GetInstanceID returns the instanceID that is injected into all the
+//resources created by the plugin
+func (k *KubernetesClient) GetInstanceID() string {
+	return k.instanceID
 }

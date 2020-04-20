@@ -21,10 +21,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"testing"
 
-	"k8splugin/internal/app"
-	"k8splugin/internal/helm"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/app"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/helm"
 
 	"github.com/gorilla/mux"
 	pkgerrors "github.com/pkg/errors"
@@ -38,8 +39,10 @@ type mockInstanceClient struct {
 	app.InstanceManager
 	// Items and err will be used to customize each test
 	// via a localized instantiation of mockInstanceClient
-	items []app.InstanceResponse
-	err   error
+	items      []app.InstanceResponse
+	miniitems  []app.InstanceMiniResponse
+	statusItem app.InstanceStatus
+	err        error
 }
 
 func (m *mockInstanceClient) Create(inp app.InstanceRequest) (app.InstanceResponse, error) {
@@ -56,6 +59,30 @@ func (m *mockInstanceClient) Get(id string) (app.InstanceResponse, error) {
 	}
 
 	return m.items[0], nil
+}
+
+func (m *mockInstanceClient) Status(id string) (app.InstanceStatus, error) {
+	if m.err != nil {
+		return app.InstanceStatus{}, m.err
+	}
+
+	return m.statusItem, nil
+}
+
+func (m *mockInstanceClient) List(rbname, rbversion, profilename string) ([]app.InstanceMiniResponse, error) {
+	if m.err != nil {
+		return []app.InstanceMiniResponse{}, m.err
+	}
+
+	return m.miniitems, nil
+}
+
+func (m *mockInstanceClient) Find(rbName string, ver string, profile string, labelKeys map[string]string) ([]app.InstanceMiniResponse, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+
+	return m.miniitems, nil
 }
 
 func (m *mockInstanceClient) Delete(id string) error {
@@ -104,12 +131,14 @@ func TestInstanceCreateHandler(t *testing.T) {
 				"profile-name": "profile1"
 			}`)),
 			expected: app.InstanceResponse{
-				ID:          "HaKpys8e",
-				RBName:      "test-rbdef",
-				RBVersion:   "v1",
-				ProfileName: "profile1",
-				CloudRegion: "region1",
-				Namespace:   "testnamespace",
+				ID: "HaKpys8e",
+				Request: app.InstanceRequest{
+					RBName:      "test-rbdef",
+					RBVersion:   "v1",
+					ProfileName: "profile1",
+					CloudRegion: "region1",
+				},
+				Namespace: "testnamespace",
 				Resources: []helm.KubernetesResource{
 					{
 						GVK: schema.GroupVersionKind{
@@ -131,12 +160,14 @@ func TestInstanceCreateHandler(t *testing.T) {
 			instClient: &mockInstanceClient{
 				items: []app.InstanceResponse{
 					{
-						ID:          "HaKpys8e",
-						RBName:      "test-rbdef",
-						RBVersion:   "v1",
-						ProfileName: "profile1",
-						CloudRegion: "region1",
-						Namespace:   "testnamespace",
+						ID: "HaKpys8e",
+						Request: app.InstanceRequest{
+							RBName:      "test-rbdef",
+							RBVersion:   "v1",
+							ProfileName: "profile1",
+							CloudRegion: "region1",
+						},
+						Namespace: "testnamespace",
 						Resources: []helm.KubernetesResource{
 							{
 								GVK: schema.GroupVersionKind{
@@ -163,7 +194,7 @@ func TestInstanceCreateHandler(t *testing.T) {
 		t.Run(testCase.label, func(t *testing.T) {
 
 			request := httptest.NewRequest("POST", "/v1/instance", testCase.input)
-			resp := executeRequest(request, NewRouter(nil, nil, testCase.instClient, nil, nil))
+			resp := executeRequest(request, NewRouter(nil, nil, testCase.instClient, nil, nil, nil))
 
 			if testCase.expectedCode != resp.StatusCode {
 				body, _ := ioutil.ReadAll(resp.Body)
@@ -203,12 +234,14 @@ func TestInstanceGetHandler(t *testing.T) {
 			input:        "HaKpys8e",
 			expectedCode: http.StatusOK,
 			expectedResponse: &app.InstanceResponse{
-				ID:          "HaKpys8e",
-				RBName:      "test-rbdef",
-				RBVersion:   "v1",
-				ProfileName: "profile1",
-				CloudRegion: "region1",
-				Namespace:   "testnamespace",
+				ID: "HaKpys8e",
+				Request: app.InstanceRequest{
+					RBName:      "test-rbdef",
+					RBVersion:   "v1",
+					ProfileName: "profile1",
+					CloudRegion: "region1",
+				},
+				Namespace: "testnamespace",
 				Resources: []helm.KubernetesResource{
 					{
 						GVK: schema.GroupVersionKind{
@@ -229,12 +262,14 @@ func TestInstanceGetHandler(t *testing.T) {
 			instClient: &mockInstanceClient{
 				items: []app.InstanceResponse{
 					{
-						ID:          "HaKpys8e",
-						RBName:      "test-rbdef",
-						RBVersion:   "v1",
-						ProfileName: "profile1",
-						CloudRegion: "region1",
-						Namespace:   "testnamespace",
+						ID: "HaKpys8e",
+						Request: app.InstanceRequest{
+							RBName:      "test-rbdef",
+							RBVersion:   "v1",
+							ProfileName: "profile1",
+							CloudRegion: "region1",
+						},
+						Namespace: "testnamespace",
 						Resources: []helm.KubernetesResource{
 							{
 								GVK: schema.GroupVersionKind{
@@ -260,7 +295,7 @@ func TestInstanceGetHandler(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.label, func(t *testing.T) {
 			request := httptest.NewRequest("GET", "/v1/instance/"+testCase.input, nil)
-			resp := executeRequest(request, NewRouter(nil, nil, testCase.instClient, nil, nil))
+			resp := executeRequest(request, NewRouter(nil, nil, testCase.instClient, nil, nil, nil))
 
 			if testCase.expectedCode != resp.StatusCode {
 				t.Fatalf("Request method returned: %v and it was expected: %v",
@@ -273,6 +308,238 @@ func TestInstanceGetHandler(t *testing.T) {
 					t.Fatalf("Parsing the returned response got an error (%s)", err)
 				}
 				if !reflect.DeepEqual(testCase.expectedResponse, &response) {
+					t.Fatalf("TestGetHandler returned:\n result=%v\n expected=%v",
+						&response, testCase.expectedResponse)
+				}
+			}
+		})
+	}
+}
+
+func TestStatusHandler(t *testing.T) {
+	testCases := []struct {
+		label            string
+		input            string
+		expectedCode     int
+		expectedResponse *app.InstanceStatus
+		instClient       *mockInstanceClient
+	}{
+		{
+			label:        "Fail to Get Status",
+			input:        "HaKpys8e",
+			expectedCode: http.StatusInternalServerError,
+			instClient: &mockInstanceClient{
+				err: pkgerrors.New("Internal error"),
+			},
+		},
+		{
+			label:        "Succesful GET Status",
+			input:        "HaKpys8e",
+			expectedCode: http.StatusOK,
+			expectedResponse: &app.InstanceStatus{
+				Request: app.InstanceRequest{
+					RBName:      "test-rbdef",
+					RBVersion:   "v1",
+					ProfileName: "profile1",
+					CloudRegion: "region1",
+				},
+				Ready:         true,
+				ResourceCount: 2,
+				PodStatuses: []app.PodStatus{
+					{
+						Name:        "test-pod1",
+						Namespace:   "default",
+						Ready:       true,
+						IPAddresses: []string{"192.168.1.1", "192.168.2.1"},
+					},
+					{
+						Name:        "test-pod2",
+						Namespace:   "default",
+						Ready:       true,
+						IPAddresses: []string{"192.168.3.1", "192.168.5.1"},
+					},
+				},
+			},
+			instClient: &mockInstanceClient{
+				statusItem: app.InstanceStatus{
+					Request: app.InstanceRequest{
+						RBName:      "test-rbdef",
+						RBVersion:   "v1",
+						ProfileName: "profile1",
+						CloudRegion: "region1",
+					},
+					Ready:         true,
+					ResourceCount: 2,
+					PodStatuses: []app.PodStatus{
+						{
+							Name:        "test-pod1",
+							Namespace:   "default",
+							Ready:       true,
+							IPAddresses: []string{"192.168.1.1", "192.168.2.1"},
+						},
+						{
+							Name:        "test-pod2",
+							Namespace:   "default",
+							Ready:       true,
+							IPAddresses: []string{"192.168.3.1", "192.168.5.1"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.label, func(t *testing.T) {
+			request := httptest.NewRequest("GET", "/v1/instance/"+testCase.input+"/status", nil)
+			resp := executeRequest(request, NewRouter(nil, nil, testCase.instClient, nil, nil, nil))
+
+			if testCase.expectedCode != resp.StatusCode {
+				t.Fatalf("Request method returned: %v and it was expected: %v", resp.StatusCode, testCase.expectedCode)
+			}
+		})
+	}
+}
+
+func TestInstanceListHandler(t *testing.T) {
+	testCases := []struct {
+		label            string
+		input            string
+		expectedCode     int
+		queryParams      bool
+		queryParamsMap   map[string]string
+		expectedResponse []app.InstanceMiniResponse
+		instClient       *mockInstanceClient
+	}{
+		{
+			label:        "Fail to List Instance",
+			input:        "HaKpys8e",
+			expectedCode: http.StatusInternalServerError,
+			instClient: &mockInstanceClient{
+				err: pkgerrors.New("Internal error"),
+			},
+		},
+		{
+			label:        "Succesful List Instances",
+			expectedCode: http.StatusOK,
+			expectedResponse: []app.InstanceMiniResponse{
+				{
+					ID: "HaKpys8e",
+					Request: app.InstanceRequest{
+						RBName:      "test-rbdef",
+						RBVersion:   "v1",
+						ProfileName: "profile1",
+						CloudRegion: "region1",
+					},
+					Namespace: "testnamespace",
+				},
+				{
+					ID: "HaKpys8f",
+					Request: app.InstanceRequest{
+						RBName:      "test-rbdef-two",
+						RBVersion:   "versionsomething",
+						ProfileName: "profile3",
+						CloudRegion: "region1",
+					},
+					Namespace: "testnamespace-two",
+				},
+			},
+			instClient: &mockInstanceClient{
+				miniitems: []app.InstanceMiniResponse{
+					{
+						ID: "HaKpys8e",
+						Request: app.InstanceRequest{
+							RBName:      "test-rbdef",
+							RBVersion:   "v1",
+							ProfileName: "profile1",
+							CloudRegion: "region1",
+						},
+						Namespace: "testnamespace",
+					},
+					{
+						ID: "HaKpys8f",
+						Request: app.InstanceRequest{
+							RBName:      "test-rbdef-two",
+							RBVersion:   "versionsomething",
+							ProfileName: "profile3",
+							CloudRegion: "region1",
+						},
+						Namespace: "testnamespace-two",
+					},
+				},
+			},
+		},
+		{
+			label:       "List Instances Based on Query Parameters",
+			queryParams: true,
+			queryParamsMap: map[string]string{
+				"rb-name": "test-rbdef1",
+			},
+			expectedCode: http.StatusOK,
+			expectedResponse: []app.InstanceMiniResponse{
+				{
+					ID: "HaKpys8e",
+					Request: app.InstanceRequest{
+						RBName:      "test-rbdef",
+						RBVersion:   "v1",
+						ProfileName: "profile1",
+						CloudRegion: "region1",
+					},
+					Namespace: "testnamespace",
+				},
+			},
+			instClient: &mockInstanceClient{
+				miniitems: []app.InstanceMiniResponse{
+					{
+						ID: "HaKpys8e",
+						Request: app.InstanceRequest{
+							RBName:      "test-rbdef",
+							RBVersion:   "v1",
+							ProfileName: "profile1",
+							CloudRegion: "region1",
+						},
+						Namespace: "testnamespace",
+					},
+				},
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.label, func(t *testing.T) {
+			request := httptest.NewRequest("GET", "/v1/instance", nil)
+			if testCase.queryParams {
+				q := request.URL.Query()
+				for k, v := range testCase.queryParamsMap {
+					q.Add(k, v)
+				}
+				request.URL.RawQuery = q.Encode()
+			}
+			resp := executeRequest(request, NewRouter(nil, nil, testCase.instClient, nil, nil, nil))
+
+			if testCase.expectedCode != resp.StatusCode {
+				t.Fatalf("Request method returned: %v and it was expected: %v",
+					resp.StatusCode, testCase.expectedCode)
+			}
+			if resp.StatusCode == http.StatusOK {
+				var response []app.InstanceMiniResponse
+				err := json.NewDecoder(resp.Body).Decode(&response)
+				if err != nil {
+					t.Fatalf("Parsing the returned response got an error (%s)", err)
+				}
+
+				// Since the order of returned slice is not guaranteed
+				// Sort them first and then do deepequal
+				// Check both and return error if both don't match
+				sort.Slice(response, func(i, j int) bool {
+					return response[i].ID < response[j].ID
+				})
+
+				sort.Slice(testCase.expectedResponse, func(i, j int) bool {
+					return testCase.expectedResponse[i].ID < testCase.expectedResponse[j].ID
+				})
+
+				if reflect.DeepEqual(testCase.expectedResponse, response) == false {
 					t.Fatalf("TestGetHandler returned:\n result=%v\n expected=%v",
 						&response, testCase.expectedResponse)
 				}
@@ -307,7 +574,7 @@ func TestDeleteHandler(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.label, func(t *testing.T) {
 			request := httptest.NewRequest("DELETE", "/v1/instance/"+testCase.input, nil)
-			resp := executeRequest(request, NewRouter(nil, nil, testCase.instClient, nil, nil))
+			resp := executeRequest(request, NewRouter(nil, nil, testCase.instClient, nil, nil, nil))
 
 			if testCase.expectedCode != resp.StatusCode {
 				t.Fatalf("Request method returned: %v and it was expected: %v", resp.StatusCode, testCase.expectedCode)
@@ -315,61 +582,3 @@ func TestDeleteHandler(t *testing.T) {
 		})
 	}
 }
-
-// TODO: Update this test when the UpdateVNF endpoint is fixed.
-/*
-func TestVNFInstanceUpdate(t *testing.T) {
-	t.Run("Succesful update a VNF", func(t *testing.T) {
-		payload := []byte(`{
-			"cloud_region_id": "region1",
-			"csar_id": "UUID-1",
-			"oof_parameters": [{
-				"key1": "value1",
-				"key2": "value2",
-				"key3": {}
-			}],
-			"network_parameters": {
-				"oam_ip_address": {
-					"connection_point": "string",
-					"ip_address": "string",
-					"workload_name": "string"
-				}
-			}
-		}`)
-		expected := &UpdateVnfResponse{
-			DeploymentID: "1",
-		}
-
-		var result UpdateVnfResponse
-
-		req := httptest.NewRequest("PUT", "/v1/vnf_instances/1", bytes.NewBuffer(payload))
-
-		GetVNFClient = func(configPath string) (krd.VNFInstanceClientInterface, error) {
-			return &mockClient{
-				update: func() error {
-					return nil
-				},
-			}, nil
-		}
-		utils.ReadCSARFromFileSystem = func(csarID string) (*krd.KubernetesData, error) {
-			kubeData := &krd.KubernetesData{
-				Deployment: &appsV1.Deployment{},
-				Service:    &coreV1.Service{},
-			}
-			return kubeData, nil
-		}
-
-		response := executeRequest(req)
-		checkResponseCode(t, http.StatusCreated, response.Code)
-
-		err := json.NewDecoder(response.Body).Decode(&result)
-		if err != nil {
-			t.Fatalf("TestVNFInstanceUpdate returned:\n result=%v\n expected=%v", err, expected.DeploymentID)
-		}
-
-		if resp.DeploymentID != expected.DeploymentID {
-			t.Fatalf("TestVNFInstanceUpdate returned:\n result=%v\n expected=%v", resp.DeploymentID, expected.DeploymentID)
-		}
-	})
-}
-*/

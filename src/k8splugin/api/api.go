@@ -14,9 +14,9 @@ limitations under the License.
 package api
 
 import (
-	"k8splugin/internal/app"
-	"k8splugin/internal/connection"
-	"k8splugin/internal/rb"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/app"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/connection"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/rb"
 
 	"github.com/gorilla/mux"
 )
@@ -25,7 +25,8 @@ import (
 func NewRouter(defClient rb.DefinitionManager,
 	profileClient rb.ProfileManager,
 	instClient app.InstanceManager,
-	configClient rb.ConfigManager,
+	configClient app.ConfigManager,
+	connectionClient connection.ConnectionManager,
 	templateClient rb.ConfigTemplateManager) *mux.Router {
 
 	router := mux.NewRouter()
@@ -37,25 +38,36 @@ func NewRouter(defClient rb.DefinitionManager,
 	instHandler := instanceHandler{client: instClient}
 	instRouter := router.PathPrefix("/v1").Subrouter()
 	instRouter.HandleFunc("/instance", instHandler.createHandler).Methods("POST")
+	instRouter.HandleFunc("/instance", instHandler.listHandler).Methods("GET")
+	// Match rb-names, versions or profiles
+	instRouter.HandleFunc("/instance", instHandler.listHandler).
+		Queries("rb-name", "{rb-name}",
+			"rb-version", "{rb-version}",
+			"profile-name", "{profile-name}").Methods("GET")
+
 	instRouter.HandleFunc("/instance/{instID}", instHandler.getHandler).Methods("GET")
+	instRouter.HandleFunc("/instance/{instID}/status", instHandler.statusHandler).Methods("GET")
 	instRouter.HandleFunc("/instance/{instID}", instHandler.deleteHandler).Methods("DELETE")
 	// (TODO): Fix update method
 	// instRouter.HandleFunc("/{vnfInstanceId}", UpdateHandler).Methods("PUT")
 
 	//Setup the broker handler here
+	//Use the base router without any path prefixes
 	brokerHandler := brokerInstanceHandler{client: instClient}
-	instRouter.HandleFunc("/{cloud-owner}/{cloud-region}/infra_workload", brokerHandler.createHandler).Methods("POST")
-	instRouter.HandleFunc("/{cloud-owner}/{cloud-region}/infra_workload/{instID}",
-		brokerHandler.getHandler).Methods("GET")
-	instRouter.HandleFunc("/{cloud-owner}/{cloud-region}/infra_workload/{instID}",
-		brokerHandler.deleteHandler).Methods("DELETE")
+	brokerRouter := router.PathPrefix("/v1").Subrouter()
+	brokerRouter.HandleFunc("/{cloud-owner}/{cloud-region}/infra_workload", brokerHandler.createHandler).Methods("POST")
+	brokerRouter.HandleFunc("/{cloud-owner}/{cloud-region}/infra_workload/{instID}", brokerHandler.getHandler).Methods("GET")
+	brokerRouter.HandleFunc("/{cloud-owner}/{cloud-region}/infra_workload", brokerHandler.findHandler).Queries("name", "{name}").Methods("GET")
+	brokerRouter.HandleFunc("/{cloud-owner}/{cloud-region}/infra_workload/{instID}", brokerHandler.deleteHandler).Methods("DELETE")
 
 	//Setup the connectivity api handler here
-	connectionClient := connection.NewConnectionClient()
-	connectionHandler := connection.ConnectionHandler{Client: connectionClient}
-	instRouter.HandleFunc("/connectivity-info", connectionHandler.CreateHandler).Methods("POST")
-	instRouter.HandleFunc("/connectivity-info/{connname}", connectionHandler.GetHandler).Methods("GET")
-	instRouter.HandleFunc("/connectivity-info/{connname}", connectionHandler.DeleteHandler).Methods("DELETE")
+	if connectionClient == nil {
+		connectionClient = connection.NewConnectionClient()
+	}
+	connectionHandler := connectionHandler{client: connectionClient}
+	instRouter.HandleFunc("/connectivity-info", connectionHandler.createHandler).Methods("POST")
+	instRouter.HandleFunc("/connectivity-info/{connname}", connectionHandler.getHandler).Methods("GET")
+	instRouter.HandleFunc("/connectivity-info/{connname}", connectionHandler.deleteHandler).Methods("DELETE")
 
 	//Setup resource bundle definition routes
 	if defClient == nil {
@@ -66,6 +78,7 @@ func NewRouter(defClient rb.DefinitionManager,
 	resRouter.HandleFunc("/definition", defHandler.createHandler).Methods("POST")
 	resRouter.HandleFunc("/definition/{rbname}/{rbversion}/content", defHandler.uploadHandler).Methods("POST")
 	resRouter.HandleFunc("/definition/{rbname}", defHandler.listVersionsHandler).Methods("GET")
+	resRouter.HandleFunc("/definition", defHandler.listAllHandler).Methods("GET")
 	resRouter.HandleFunc("/definition/{rbname}/{rbversion}", defHandler.getHandler).Methods("GET")
 	resRouter.HandleFunc("/definition/{rbname}/{rbversion}", defHandler.deleteHandler).Methods("DELETE")
 
@@ -75,6 +88,7 @@ func NewRouter(defClient rb.DefinitionManager,
 	}
 	profileHandler := rbProfileHandler{client: profileClient}
 	resRouter.HandleFunc("/definition/{rbname}/{rbversion}/profile", profileHandler.createHandler).Methods("POST")
+	resRouter.HandleFunc("/definition/{rbname}/{rbversion}/profile", profileHandler.listHandler).Methods("GET")
 	resRouter.HandleFunc("/definition/{rbname}/{rbversion}/profile/{prname}/content", profileHandler.uploadHandler).Methods("POST")
 	resRouter.HandleFunc("/definition/{rbname}/{rbversion}/profile/{prname}", profileHandler.getHandler).Methods("GET")
 	resRouter.HandleFunc("/definition/{rbname}/{rbversion}/profile/{prname}", profileHandler.deleteHandler).Methods("DELETE")
@@ -91,7 +105,7 @@ func NewRouter(defClient rb.DefinitionManager,
 
 	// Config value
 	if configClient == nil {
-		configClient = rb.NewConfigClient()
+		configClient = app.NewConfigClient()
 	}
 	configHandler := rbConfigHandler{client: configClient}
 	resRouter.HandleFunc("/definition/{rbname}/{rbversion}/profile/{prname}/config", configHandler.createHandler).Methods("POST")

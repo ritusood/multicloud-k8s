@@ -18,13 +18,14 @@ import (
 	"io/ioutil"
 	"log"
 	"reflect"
+	"sort"
 	"testing"
 
-	utils "k8splugin/internal"
-	"k8splugin/internal/connection"
-	"k8splugin/internal/db"
-	"k8splugin/internal/helm"
-	"k8splugin/internal/rb"
+	utils "github.com/onap/multicloud-k8s/src/k8splugin/internal"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/connection"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/db"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/helm"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/rb"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -50,7 +51,7 @@ func TestInstanceCreate(t *testing.T) {
 			Items: map[string]map[string][]byte{
 				rb.ProfileKey{RBName: "test-rbdef", RBVersion: "v1",
 					ProfileName: "profile1"}.String(): {
-					"metadata": []byte(
+					"profilemetadata": []byte(
 						"{\"profile-name\":\"profile1\"," +
 							"\"release-name\":\"testprofilereleasename\"," +
 							"\"namespace\":\"testnamespace\"," +
@@ -58,7 +59,7 @@ func TestInstanceCreate(t *testing.T) {
 							"\"rb-version\":\"v1\"," +
 							"\"kubernetesversion\":\"1.12.3\"}"),
 					// base64 encoding of vagrant/tests/vnfs/testrb/helm/profile
-					"content": []byte("H4sICLmjT1wAA3Byb2ZpbGUudGFyAO1Y32/bNhD2s/6Kg/KyYZZsy" +
+					"profilecontent": []byte("H4sICLmjT1wAA3Byb2ZpbGUudGFyAO1Y32/bNhD2s/6Kg/KyYZZsy" +
 						"78K78lLMsxY5gRxmqIYhoKWaJsYJWokZdfo+r/vSFmunCZNBtQJ1vF7sXX36e54vDN5T" +
 						"knGFlTpcEtS3jgO2ohBr2c/EXc/29Gg1+h0e1F32Ol1B1Gj3Ymifr8B7SPFc4BCaSIBG" +
 						"lII/SXeY/r/KIIg8NZUKiayEaw7nt7mdOQBrAkvqBqBL1ArWULflRJbJz4SYpEt2FJSJ" +
@@ -83,13 +84,13 @@ func TestInstanceCreate(t *testing.T) {
 						"yJ66WPQwcHBwcHBwcHBwcHBwcHBwcHhm8Q/mTHqWgAoAAA="),
 				},
 				rb.DefinitionKey{RBName: "test-rbdef", RBVersion: "v1"}.String(): {
-					"metadata": []byte(
+					"defmetadata": []byte(
 						"{\"rb-name\":\"test-rbdef\"," +
 							"\"rb-version\":\"v1\"," +
 							"\"chart-name\":\"vault-consul-dev\"," +
 							"\"description\":\"testresourcebundle\"}"),
 					// base64 encoding of vagrant/tests/vnfs/testrb/helm/vault-consul-dev
-					"content": []byte("H4sICEetS1wAA3ZhdWx0LWNvbnN1bC1kZXYudGFyAO0c7XLbNjK/+R" +
+					"defcontent": []byte("H4sICEetS1wAA3ZhdWx0LWNvbnN1bC1kZXYudGFyAO0c7XLbNjK/+R" +
 						"QYujdJehatb+V4czPnOmnPk9bO2Gk7nbaTgUhIxpgiGAK0o3P9QPca92S3C5AU9GXZiax" +
 						"c7rA/LJEAFovdxX4AK1/RIlGNSKSySBoxuzp4sn1oAgx6Pf0JsPipv7c63XZ70O61W4Mn" +
 						"zVZ7MGg9Ib1HoGUJCqloTsiTXAh1V79N7V8oXC3K/+iC5iqY0kmytTlQwP1ud538W51Wf" +
@@ -202,12 +203,14 @@ func TestInstanceGet(t *testing.T) {
 				InstanceKey{ID: "HaKpys8e"}.String(): {
 					"instance": []byte(
 						`{
-							"profile-name":"profile1",
-						  	"id":"HaKpys8e",
+							"id":"HaKpys8e",
+							"request": {
+								"profile-name":"profile1",
+								"rb-name":"test-rbdef",
+								"rb-version":"v1",
+								"cloud-region":"region1"
+							},
 							"namespace":"testnamespace",
-							"rb-name":"test-rbdef",
-							"rb-version":"v1",
-							"cloud-region":"region1",
 							"resources": [
 								{
 									"GVK": {
@@ -232,13 +235,14 @@ func TestInstanceGet(t *testing.T) {
 		}
 
 		expected := InstanceResponse{
-			ID:          "HaKpys8e",
-			RBName:      "test-rbdef",
-			RBVersion:   "v1",
-			ProfileName: "profile1",
-			CloudRegion: "region1",
-			Namespace:   "testnamespace",
-
+			ID: "HaKpys8e",
+			Request: InstanceRequest{
+				RBName:      "test-rbdef",
+				RBVersion:   "v1",
+				ProfileName: "profile1",
+				CloudRegion: "region1",
+			},
+			Namespace: "testnamespace",
 			Resources: []helm.KubernetesResource{
 				{
 					GVK: schema.GroupVersionKind{
@@ -274,12 +278,14 @@ func TestInstanceGet(t *testing.T) {
 				InstanceKey{ID: "HaKpys8e"}.String(): {
 					"instance": []byte(
 						`{
-							"profile-name":"profile1",
-						  	"id":"HaKpys8e",
+							"id":"HaKpys8e",
+							"request": {
+								"profile-name":"profile1",
+								"rb-name":"test-rbdef",
+								"rb-version":"v1",
+								"cloud-region":"region1"
+							},
 							"namespace":"testnamespace",
-							"rb-name":"test-rbdef",
-							"rb-version":"v1",
-							"cloud-region":"region1",
 							"resources": [
 								{
 									"GVK": {
@@ -312,6 +318,492 @@ func TestInstanceGet(t *testing.T) {
 	})
 }
 
+func TestInstanceStatus(t *testing.T) {
+	oldkrdPluginData := utils.LoadedPlugins
+
+	defer func() {
+		utils.LoadedPlugins = oldkrdPluginData
+	}()
+
+	err := LoadMockPlugins(utils.LoadedPlugins)
+	if err != nil {
+		t.Fatalf("LoadMockPlugins returned an error (%s)", err)
+	}
+
+	t.Run("Successfully Get Instance Status", func(t *testing.T) {
+		db.DBconn = &db.MockDB{
+			Items: map[string]map[string][]byte{
+				InstanceKey{ID: "HaKpys8e"}.String(): {
+					"instanceStatus": []byte(
+						`{
+							"request": {
+								"profile-name":"profile1",
+								"rb-name":"test-rbdef",
+								"rb-version":"v1",
+								"cloud-region":"region1"
+							},
+							"ready": true,
+							"resourceCount": 2,
+							"podStatuses": [
+								{
+									"name":        "test-pod1",
+									"namespace":   "default",
+									"ready":       true,
+									"ipaddresses": ["192.168.1.1", "192.168.2.1"]
+								},
+								{
+									"name":        "test-pod2",
+									"namespace":   "default",
+									"ready":       true,
+									"ipaddresses": ["192.168.4.1", "192.168.5.1"]
+								}
+							]
+						}`),
+				},
+			},
+		}
+
+		expected := InstanceStatus{
+			Request: InstanceRequest{
+				RBName:      "test-rbdef",
+				RBVersion:   "v1",
+				ProfileName: "profile1",
+				CloudRegion: "region1",
+			},
+			Ready:         true,
+			ResourceCount: 2,
+			PodStatuses: []PodStatus{
+				{
+					Name:        "test-pod1",
+					Namespace:   "default",
+					Ready:       true,
+					IPAddresses: []string{"192.168.1.1", "192.168.2.1"},
+				},
+				{
+					Name:        "test-pod2",
+					Namespace:   "default",
+					Ready:       true,
+					IPAddresses: []string{"192.168.4.1", "192.168.5.1"},
+				},
+			},
+		}
+		ic := NewInstanceClient()
+		id := "HaKpys8e"
+		data, err := ic.Status(id)
+		if err != nil {
+			t.Fatalf("TestInstanceStatus returned an error (%s)", err)
+		}
+		if !reflect.DeepEqual(expected, data) {
+			t.Fatalf("TestInstanceStatus returned:\n result=%v\n expected=%v",
+				data, expected)
+		}
+	})
+
+	t.Run("Get non-existing Instance", func(t *testing.T) {
+		db.DBconn = &db.MockDB{
+			Items: map[string]map[string][]byte{
+				InstanceKey{ID: "HaKpys8e"}.String(): {
+					"instanceStatus": []byte(
+						`{
+							"request": {
+								"profile-name":"profile1",
+								"rb-name":"test-rbdef",
+								"rb-version":"v1",
+								"cloud-region":"region1"
+							},
+							"ready": true,
+							"resourceCount": 2,
+							"podStatuses": [
+								{
+									"name":        "test-pod1",
+									"namespace":   "default",
+									"ready":       true,
+									"ipaddresses": ["192.168.1.1", "192.168.2.1"]
+								},
+								{
+									"name":        "test-pod2",
+									"namespace":   "default",
+									"ready":       true,
+									"ipaddresses": ["192.168.4.1", "192.168.5.1"]
+								}
+							]
+						}`),
+				},
+			},
+		}
+
+		ic := NewInstanceClient()
+		_, err := ic.Get("non-existing")
+		if err == nil {
+			t.Fatal("Expected error, got pass", err)
+		}
+	})
+}
+
+func TestInstanceFind(t *testing.T) {
+	oldkrdPluginData := utils.LoadedPlugins
+
+	defer func() {
+		utils.LoadedPlugins = oldkrdPluginData
+	}()
+
+	err := LoadMockPlugins(utils.LoadedPlugins)
+	if err != nil {
+		t.Fatalf("LoadMockPlugins returned an error (%s)", err)
+	}
+
+	items := map[string]map[string][]byte{
+		InstanceKey{ID: "HaKpys8e"}.String(): {
+			"instance": []byte(
+				`{
+					"id":"HaKpys8e",
+					"request": {
+						"profile-name":"profile1",
+						"rb-name":"test-rbdef",
+						"rb-version":"v1",
+						"cloud-region":"region1",
+						"labels":{
+							"vf_module_id": "test-vf-module-id"
+						}
+					},
+					"namespace":"testnamespace",
+					"resources": [
+						{
+							"GVK": {
+								"Group":"apps",
+								"Version":"v1",
+								"Kind":"Deployment"
+							},
+							"Name": "deployment-1"
+						},
+						{
+							"GVK": {
+								"Group":"",
+								"Version":"v1",
+								"Kind":"Service"
+							},
+							"Name": "service-1"
+						}
+					]
+				}`),
+		},
+		InstanceKey{ID: "HaKpys8f"}.String(): {
+			"instance": []byte(
+				`{
+					"id":"HaKpys8f",
+					"request": {
+						"profile-name":"profile2",
+						"rb-name":"test-rbdef",
+						"rb-version":"v1",
+						"cloud-region":"region1"
+					},
+					"namespace":"testnamespace",
+					"resources": [
+						{
+							"GVK": {
+								"Group":"apps",
+								"Version":"v1",
+								"Kind":"Deployment"
+							},
+							"Name": "deployment-1"
+						},
+						{
+							"GVK": {
+								"Group":"",
+								"Version":"v1",
+								"Kind":"Service"
+							},
+							"Name": "service-1"
+						}
+					]
+				}`),
+		},
+		InstanceKey{ID: "HaKpys8g"}.String(): {
+			"instance": []byte(
+				`{
+					"id":"HaKpys8g",
+					"request": {
+						"profile-name":"profile1",
+						"rb-name":"test-rbdef",
+						"rb-version":"v2",
+						"cloud-region":"region1"
+					},
+					"namespace":"testnamespace",
+					"resources": [
+						{
+							"GVK": {
+								"Group":"apps",
+								"Version":"v1",
+								"Kind":"Deployment"
+							},
+							"Name": "deployment-1"
+						},
+						{
+							"GVK": {
+								"Group":"",
+								"Version":"v1",
+								"Kind":"Service"
+							},
+							"Name": "service-1"
+						}
+					]
+				}`),
+		},
+	}
+
+	t.Run("Successfully Find Instance By Name", func(t *testing.T) {
+		db.DBconn = &db.MockDB{
+			Items: items,
+		}
+
+		expected := []InstanceMiniResponse{
+			{
+				ID: "HaKpys8e",
+				Request: InstanceRequest{
+					RBName:      "test-rbdef",
+					RBVersion:   "v1",
+					ProfileName: "profile1",
+					CloudRegion: "region1",
+					Labels: map[string]string{
+						"vf_module_id": "test-vf-module-id",
+					},
+				},
+				Namespace: "testnamespace",
+			},
+			{
+				ID: "HaKpys8f",
+				Request: InstanceRequest{
+					RBName:      "test-rbdef",
+					RBVersion:   "v1",
+					ProfileName: "profile2",
+					CloudRegion: "region1",
+				},
+				Namespace: "testnamespace",
+			},
+			{
+				ID: "HaKpys8g",
+				Request: InstanceRequest{
+					RBName:      "test-rbdef",
+					RBVersion:   "v2",
+					ProfileName: "profile1",
+					CloudRegion: "region1",
+				},
+				Namespace: "testnamespace",
+			},
+		}
+		ic := NewInstanceClient()
+		name := "test-rbdef"
+		data, err := ic.Find(name, "", "", nil)
+		if err != nil {
+			t.Fatalf("TestInstanceFind returned an error (%s)", err)
+		}
+
+		// Since the order of returned slice is not guaranteed
+		// Check both and return error if both don't match
+		sort.Slice(data, func(i, j int) bool {
+			return data[i].ID < data[j].ID
+		})
+		// Sort both as it is not expected that testCase.expected
+		// is sorted
+		sort.Slice(expected, func(i, j int) bool {
+			return expected[i].ID < expected[j].ID
+		})
+
+		if !reflect.DeepEqual(expected, data) {
+			t.Fatalf("TestInstanceFind returned:\n result=%v\n expected=%v",
+				data, expected)
+		}
+	})
+
+	t.Run("Successfully Find Instance By Name and Label", func(t *testing.T) {
+		db.DBconn = &db.MockDB{
+			Items: items,
+		}
+
+		expected := []InstanceMiniResponse{
+			{
+				ID: "HaKpys8e",
+				Request: InstanceRequest{
+					RBName:      "test-rbdef",
+					RBVersion:   "v1",
+					ProfileName: "profile1",
+					CloudRegion: "region1",
+					Labels: map[string]string{
+						"vf_module_id": "test-vf-module-id",
+					},
+				},
+				Namespace: "testnamespace",
+			},
+		}
+		ic := NewInstanceClient()
+		name := "test-rbdef"
+		labels := map[string]string{
+			"vf_module_id": "test-vf-module-id",
+		}
+		data, err := ic.Find(name, "", "", labels)
+		if err != nil {
+			t.Fatalf("TestInstanceFind returned an error (%s)", err)
+		}
+
+		// Since the order of returned slice is not guaranteed
+		// Check both and return error if both don't match
+		sort.Slice(data, func(i, j int) bool {
+			return data[i].ID < data[j].ID
+		})
+		// Sort both as it is not expected that testCase.expected
+		// is sorted
+		sort.Slice(expected, func(i, j int) bool {
+			return expected[i].ID < expected[j].ID
+		})
+
+		if !reflect.DeepEqual(expected, data) {
+			t.Fatalf("TestInstanceFind returned:\n result=%v\n expected=%v",
+				data, expected)
+		}
+	})
+
+	t.Run("Successfully Find Instance By Name Version", func(t *testing.T) {
+		db.DBconn = &db.MockDB{
+			Items: items,
+		}
+
+		expected := []InstanceMiniResponse{
+			{
+				ID: "HaKpys8e",
+				Request: InstanceRequest{
+					RBName:      "test-rbdef",
+					RBVersion:   "v1",
+					ProfileName: "profile1",
+					CloudRegion: "region1",
+					Labels: map[string]string{
+						"vf_module_id": "test-vf-module-id",
+					},
+				},
+				Namespace: "testnamespace",
+			},
+			{
+				ID: "HaKpys8f",
+				Request: InstanceRequest{
+					RBName:      "test-rbdef",
+					RBVersion:   "v1",
+					ProfileName: "profile2",
+					CloudRegion: "region1",
+				},
+				Namespace: "testnamespace",
+			},
+		}
+		ic := NewInstanceClient()
+		name := "test-rbdef"
+		data, err := ic.Find(name, "v1", "", nil)
+		if err != nil {
+			t.Fatalf("TestInstanceFind returned an error (%s)", err)
+		}
+
+		// Since the order of returned slice is not guaranteed
+		// Check both and return error if both don't match
+		sort.Slice(data, func(i, j int) bool {
+			return data[i].ID < data[j].ID
+		})
+		// Sort both as it is not expected that testCase.expected
+		// is sorted
+		sort.Slice(expected, func(i, j int) bool {
+			return expected[i].ID < expected[j].ID
+		})
+
+		if !reflect.DeepEqual(expected, data) {
+			t.Fatalf("TestInstanceFind returned:\n result=%v\n expected=%v",
+				data, expected)
+		}
+	})
+
+	t.Run("Successfully Find Instance By Name Version Profile", func(t *testing.T) {
+		db.DBconn = &db.MockDB{
+			Items: items,
+		}
+
+		expected := []InstanceMiniResponse{
+			{
+				ID: "HaKpys8e",
+				Request: InstanceRequest{
+					RBName:      "test-rbdef",
+					RBVersion:   "v1",
+					ProfileName: "profile1",
+					CloudRegion: "region1",
+					Labels: map[string]string{
+						"vf_module_id": "test-vf-module-id",
+					},
+				},
+				Namespace: "testnamespace",
+			},
+		}
+		ic := NewInstanceClient()
+		name := "test-rbdef"
+		data, err := ic.Find(name, "v1", "profile1", nil)
+		if err != nil {
+			t.Fatalf("TestInstanceFind returned an error (%s)", err)
+		}
+
+		// Since the order of returned slice is not guaranteed
+		// Check both and return error if both don't match
+		sort.Slice(data, func(i, j int) bool {
+			return data[i].ID < data[j].ID
+		})
+		// Sort both as it is not expected that testCase.expected
+		// is sorted
+		sort.Slice(expected, func(i, j int) bool {
+			return expected[i].ID < expected[j].ID
+		})
+
+		if !reflect.DeepEqual(expected, data) {
+			t.Fatalf("TestInstanceFind returned:\n result=%v\n expected=%v",
+				data, expected)
+		}
+	})
+
+	t.Run("Find non-existing Instance", func(t *testing.T) {
+		db.DBconn = &db.MockDB{
+			Items: map[string]map[string][]byte{
+				InstanceKey{ID: "HaKpys8e"}.String(): {
+					"instance": []byte(
+						`{
+							"profile-name":"profile1",
+						  	"id":"HaKpys8e",
+							"namespace":"testnamespace",
+							"rb-name":"test-rbdef",
+							"rb-version":"v1",
+							"cloud-region":"region1",
+							"resources": [
+								{
+									"GVK": {
+										"Group":"apps",
+										"Version":"v1",
+										"Kind":"Deployment"
+									},
+									"Name": "deployment-1"
+								},
+								{
+									"GVK": {
+										"Group":"",
+										"Version":"v1",
+										"Kind":"Service"
+									},
+									"Name": "service-1"
+								}
+							]
+						}`),
+				},
+			},
+		}
+
+		ic := NewInstanceClient()
+		name := "non-existing"
+		resp, _ := ic.Find(name, "", "", nil)
+		if len(resp) != 0 {
+			t.Fatalf("Expected 0 responses, but got %d", len(resp))
+		}
+	})
+}
+
 func TestInstanceDelete(t *testing.T) {
 	oldkrdPluginData := utils.LoadedPlugins
 
@@ -336,12 +828,14 @@ func TestInstanceDelete(t *testing.T) {
 				InstanceKey{ID: "HaKpys8e"}.String(): {
 					"instance": []byte(
 						`{
-							"profile-name":"profile1",
-						  	"id":"HaKpys8e",
+							"id":"HaKpys8e",
+							"request": {
+								"profile-name":"profile1",
+								"rb-name":"test-rbdef",
+								"rb-version":"v1",
+								"cloud-region":"mock_connection"
+							},
 							"namespace":"testnamespace",
-							"rb-name":"test-rbdef",
-							"rb-version":"v1",
-							"cloud-region":"mock_connection",
 							"resources": [
 								{
 									"GVK": {

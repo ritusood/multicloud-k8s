@@ -20,11 +20,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"k8splugin/internal/rb"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"testing"
+
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/rb"
 
 	pkgerrors "github.com/pkg/errors"
 )
@@ -54,6 +56,14 @@ func (m *mockRBProfile) Get(rbname, rbversion, prname string) (rb.Profile, error
 	}
 
 	return m.Items[0], nil
+}
+
+func (m *mockRBProfile) List(rbname, rbversion string) ([]rb.Profile, error) {
+	if m.Err != nil {
+		return []rb.Profile{}, m.Err
+	}
+
+	return m.Items, nil
 }
 
 func (m *mockRBProfile) Delete(rbname, rbversion, prname string) error {
@@ -117,7 +127,7 @@ func TestRBProfileCreateHandler(t *testing.T) {
 		t.Run(testCase.label, func(t *testing.T) {
 			request := httptest.NewRequest("POST", "/v1/rb/definition/test-rbdef/v1/profile",
 				testCase.reader)
-			resp := executeRequest(request, NewRouter(nil, testCase.rbProClient, nil, nil, nil))
+			resp := executeRequest(request, NewRouter(nil, testCase.rbProClient, nil, nil, nil, nil))
 
 			//Check returned code
 			if resp.StatusCode != testCase.expectedCode {
@@ -174,9 +184,18 @@ func TestRBProfileGetHandler(t *testing.T) {
 			},
 		},
 		{
-			label:        "Get Non-Exiting Bundle Profile",
-			expectedCode: http.StatusInternalServerError,
+			label:        "Get Non-Existing Profile",
+			expectedCode: http.StatusNotFound,
 			prname:       "non-existing-profile",
+			rbProClient: &mockRBProfile{
+				Items: nil,
+				Err:   pkgerrors.New("Error finding master table"),
+			},
+		},
+		{
+			label:        "Faulty DB response",
+			expectedCode: http.StatusInternalServerError,
+			prname:       "profile",
 			rbProClient: &mockRBProfile{
 				// list of Profiles that will be returned by the mockclient
 				Items: []rb.Profile{},
@@ -188,7 +207,7 @@ func TestRBProfileGetHandler(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.label, func(t *testing.T) {
 			request := httptest.NewRequest("GET", "/v1/rb/definition/test-rbdef/v1/profile/"+testCase.prname, nil)
-			resp := executeRequest(request, NewRouter(nil, testCase.rbProClient, nil, nil, nil))
+			resp := executeRequest(request, NewRouter(nil, testCase.rbProClient, nil, nil, nil, nil))
 
 			//Check returned code
 			if resp.StatusCode != testCase.expectedCode {
@@ -199,6 +218,98 @@ func TestRBProfileGetHandler(t *testing.T) {
 			if resp.StatusCode == http.StatusOK {
 				got := rb.Profile{}
 				json.NewDecoder(resp.Body).Decode(&got)
+
+				if reflect.DeepEqual(testCase.expected, got) == false {
+					t.Errorf("listHandler returned unexpected body: got %v;"+
+						" expected %v", got, testCase.expected)
+				}
+			}
+		})
+	}
+}
+
+func TestRBProfileListHandler(t *testing.T) {
+
+	testCases := []struct {
+		def          string
+		version      string
+		label        string
+		expected     []rb.Profile
+		expectedCode int
+		rbProClient  *mockRBProfile
+	}{
+		{
+			def:          "test-rbdef",
+			version:      "v1",
+			label:        "List Profiles",
+			expectedCode: http.StatusOK,
+			expected: []rb.Profile{
+				{
+					RBName:            "test-rbdef",
+					RBVersion:         "v1",
+					ProfileName:       "profile1",
+					ReleaseName:       "testprofilereleasename",
+					Namespace:         "ns1",
+					KubernetesVersion: "1.12.3",
+				},
+				{
+					RBName:            "test-rbdef",
+					RBVersion:         "v1",
+					ProfileName:       "profile2",
+					ReleaseName:       "testprofilereleasename",
+					Namespace:         "ns2",
+					KubernetesVersion: "1.12.3",
+				},
+			},
+			rbProClient: &mockRBProfile{
+				// list of Profiles that will be returned by the mockclient
+				Items: []rb.Profile{
+					{
+						RBName:            "test-rbdef",
+						RBVersion:         "v1",
+						ProfileName:       "profile1",
+						ReleaseName:       "testprofilereleasename",
+						Namespace:         "ns1",
+						KubernetesVersion: "1.12.3",
+					},
+					{
+						RBName:            "test-rbdef",
+						RBVersion:         "v1",
+						ProfileName:       "profile2",
+						ReleaseName:       "testprofilereleasename",
+						Namespace:         "ns2",
+						KubernetesVersion: "1.12.3",
+					},
+				},
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.label, func(t *testing.T) {
+			request := httptest.NewRequest("GET", "/v1/rb/definition/"+testCase.def+"/"+testCase.version+"/profile", nil)
+			resp := executeRequest(request, NewRouter(nil, testCase.rbProClient, nil, nil, nil, nil))
+
+			//Check returned code
+			if resp.StatusCode != testCase.expectedCode {
+				t.Fatalf("Expected %d; Got: %d", testCase.expectedCode, resp.StatusCode)
+			}
+
+			//Check returned body only if statusOK
+			if resp.StatusCode == http.StatusOK {
+				got := []rb.Profile{}
+				json.NewDecoder(resp.Body).Decode(&got)
+
+				// Since the order of returned slice is not guaranteed
+				// Check both and return error if both don't match
+				sort.Slice(got, func(i, j int) bool {
+					return got[i].ProfileName < got[j].ProfileName
+				})
+				// Sort both as it is not expected that testCase.expected
+				// is sorted
+				sort.Slice(testCase.expected, func(i, j int) bool {
+					return testCase.expected[i].ProfileName < testCase.expected[j].ProfileName
+				})
 
 				if reflect.DeepEqual(testCase.expected, got) == false {
 					t.Errorf("listHandler returned unexpected body: got %v;"+
@@ -236,7 +347,7 @@ func TestRBProfileDeleteHandler(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.label, func(t *testing.T) {
 			request := httptest.NewRequest("DELETE", "/v1/rb/definition/test-rbdef/v1/profile/"+testCase.prname, nil)
-			resp := executeRequest(request, NewRouter(nil, testCase.rbProClient, nil, nil, nil))
+			resp := executeRequest(request, NewRouter(nil, testCase.rbProClient, nil, nil, nil, nil))
 
 			//Check returned code
 			if resp.StatusCode != testCase.expectedCode {
@@ -289,7 +400,7 @@ func TestRBProfileUploadHandler(t *testing.T) {
 		t.Run(testCase.label, func(t *testing.T) {
 			request := httptest.NewRequest("POST",
 				"/v1/rb/definition/test-rbdef/v1/profile/"+testCase.prname+"/content", testCase.body)
-			resp := executeRequest(request, NewRouter(nil, testCase.rbProClient, nil, nil, nil))
+			resp := executeRequest(request, NewRouter(nil, testCase.rbProClient, nil, nil, nil, nil))
 
 			//Check returned code
 			if resp.StatusCode != testCase.expectedCode {

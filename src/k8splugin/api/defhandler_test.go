@@ -20,12 +20,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"k8splugin/internal/rb"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"sort"
 	"testing"
+
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/rb"
 
 	pkgerrors "github.com/pkg/errors"
 )
@@ -138,7 +139,7 @@ func TestRBDefCreateHandler(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.label, func(t *testing.T) {
 			request := httptest.NewRequest("POST", "/v1/rb/definition", testCase.reader)
-			resp := executeRequest(request, NewRouter(testCase.rbDefClient, nil, nil, nil, nil))
+			resp := executeRequest(request, NewRouter(testCase.rbDefClient, nil, nil, nil, nil, nil))
 
 			//Check returned code
 			if resp.StatusCode != testCase.expectedCode {
@@ -207,7 +208,87 @@ func TestRBDefListVersionsHandler(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.label, func(t *testing.T) {
 			request := httptest.NewRequest("GET", "/v1/rb/definition/testresourcebundle", nil)
-			resp := executeRequest(request, NewRouter(testCase.rbDefClient, nil, nil, nil, nil))
+			resp := executeRequest(request, NewRouter(testCase.rbDefClient, nil, nil, nil, nil, nil))
+
+			//Check returned code
+			if resp.StatusCode != testCase.expectedCode {
+				t.Fatalf("Expected %d; Got: %d", testCase.expectedCode, resp.StatusCode)
+			}
+
+			//Check returned body only if statusOK
+			if resp.StatusCode == http.StatusOK {
+				got := []rb.Definition{}
+				json.NewDecoder(resp.Body).Decode(&got)
+
+				// Since the order of returned slice is not guaranteed
+				// Check both and return error if both don't match
+				sort.Slice(got, func(i, j int) bool {
+					return got[i].RBVersion < got[j].RBVersion
+				})
+				// Sort both as it is not expected that testCase.expected
+				// is sorted
+				sort.Slice(testCase.expected, func(i, j int) bool {
+					return testCase.expected[i].RBVersion < testCase.expected[j].RBVersion
+				})
+
+				if reflect.DeepEqual(testCase.expected, got) == false {
+					t.Errorf("listHandler returned unexpected body: got %v;"+
+						" expected %v", got, testCase.expected)
+				}
+			}
+		})
+	}
+}
+
+func TestRBDefListAllHandler(t *testing.T) {
+
+	testCases := []struct {
+		label        string
+		expected     []rb.Definition
+		expectedCode int
+		rbDefClient  *mockRBDefinition
+	}{
+		{
+			label:        "List Bundle Definitions",
+			expectedCode: http.StatusOK,
+			expected: []rb.Definition{
+				{
+					RBName:      "resourcebundle1",
+					RBVersion:   "v1",
+					ChartName:   "barchart",
+					Description: "test description for one",
+				},
+				{
+					RBName:      "resourcebundle2",
+					RBVersion:   "version2",
+					ChartName:   "foochart",
+					Description: "test description for two",
+				},
+			},
+			rbDefClient: &mockRBDefinition{
+				// list of definitions that will be returned by the mockclient
+				Items: []rb.Definition{
+					{
+						RBName:      "resourcebundle1",
+						RBVersion:   "v1",
+						ChartName:   "barchart",
+						Description: "test description for one",
+					},
+					{
+						RBName:      "resourcebundle2",
+						RBVersion:   "version2",
+						ChartName:   "foochart",
+						Description: "test description for two",
+					},
+				},
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.label, func(t *testing.T) {
+			request := httptest.NewRequest("GET", "/v1/rb/definition", nil)
+			resp := executeRequest(request, NewRouter(testCase.rbDefClient, nil, nil, nil, nil, nil))
 
 			//Check returned code
 			if resp.StatusCode != testCase.expectedCode {
@@ -287,7 +368,7 @@ func TestRBDefGetHandler(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.label, func(t *testing.T) {
 			request := httptest.NewRequest("GET", "/v1/rb/definition/"+testCase.name+"/"+testCase.version, nil)
-			resp := executeRequest(request, NewRouter(testCase.rbDefClient, nil, nil, nil, nil))
+			resp := executeRequest(request, NewRouter(testCase.rbDefClient, nil, nil, nil, nil, nil))
 
 			//Check returned code
 			if resp.StatusCode != testCase.expectedCode {
@@ -338,7 +419,7 @@ func TestRBDefDeleteHandler(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.label, func(t *testing.T) {
 			request := httptest.NewRequest("DELETE", "/v1/rb/definition/"+testCase.name+"/"+testCase.version, nil)
-			resp := executeRequest(request, NewRouter(testCase.rbDefClient, nil, nil, nil, nil))
+			resp := executeRequest(request, NewRouter(testCase.rbDefClient, nil, nil, nil, nil, nil))
 
 			//Check returned code
 			if resp.StatusCode != testCase.expectedCode {
@@ -395,7 +476,7 @@ func TestRBDefUploadHandler(t *testing.T) {
 		t.Run(testCase.label, func(t *testing.T) {
 			request := httptest.NewRequest("POST",
 				"/v1/rb/definition/"+testCase.name+"/"+testCase.version+"/content", testCase.body)
-			resp := executeRequest(request, NewRouter(testCase.rbDefClient, nil, nil, nil, nil))
+			resp := executeRequest(request, NewRouter(testCase.rbDefClient, nil, nil, nil, nil, nil))
 
 			//Check returned code
 			if resp.StatusCode != testCase.expectedCode {

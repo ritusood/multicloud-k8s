@@ -25,7 +25,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"k8splugin/internal/db"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/db"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/logutils"
 
 	pkgerrors "github.com/pkg/errors"
 )
@@ -79,8 +80,8 @@ type DefinitionClient struct {
 func NewDefinitionClient() *DefinitionClient {
 	return &DefinitionClient{
 		storeName:  "rbdef",
-		tagMeta:    "metadata",
-		tagContent: "content",
+		tagMeta:    "defmetadata",
+		tagContent: "defcontent",
 	}
 }
 
@@ -99,6 +100,40 @@ func (v *DefinitionClient) Create(def Definition) (Definition, error) {
 	err = db.DBconn.Create(v.storeName, key, v.tagMeta, def)
 	if err != nil {
 		return Definition{}, pkgerrors.Wrap(err, "Creating DB Entry")
+	}
+
+	// Create a default profile automatically
+	prc := NewProfileClient()
+	pr, err := prc.Create(Profile{
+		RBName:      def.RBName,
+		RBVersion:   def.RBVersion,
+		ProfileName: "default",
+		Namespace:   "default",
+		ReleaseName: "default",
+	})
+
+	if err != nil {
+		logutils.Error("Create Default Profile", logutils.Fields{
+			"error":        err,
+			"rb-name":      def.RBName,
+			"rb-version":   def.RBVersion,
+			"profile-name": "default",
+			"namespace":    "default",
+			"release-name": "default",
+		})
+		return Definition{}, pkgerrors.Wrap(err, "Creating Default Profile")
+	}
+
+	err = prc.Upload(pr.RBName, pr.RBVersion, pr.ProfileName, prc.getEmptyProfile())
+	if err != nil {
+		logutils.Error("Upload Empty Profile", logutils.Fields{
+			"error":           err,
+			"rb-name":         pr.RBName,
+			"rb-version":      pr.RBVersion,
+			"profile-name":    pr.ProfileName,
+			"profile-content": prc.getEmptyProfile(),
+		})
+		return Definition{}, pkgerrors.Wrap(err, "Upload Empty Profile")
 	}
 
 	return def, nil
@@ -121,10 +156,13 @@ func (v *DefinitionClient) List(name string) ([]Definition, error) {
 				log.Printf("[Definition] Error Unmarshaling value for: %s", key)
 				continue
 			}
+
 			//Select only the definitions that match name provided
-			if def.RBName == name {
+			//If name is empty, return all
+			if def.RBName == name || name == "" {
 				results = append(results, def)
 			}
+
 		}
 	}
 
@@ -168,6 +206,19 @@ func (v *DefinitionClient) Delete(name string, version string) error {
 	err = db.DBconn.Delete(v.storeName, key, v.tagContent)
 	if err != nil {
 		return pkgerrors.Wrap(err, "Delete Resource Bundle Definition Content")
+	}
+
+	//Delete the default profile as well
+	prc := NewProfileClient()
+	err = prc.Delete(name, version, "default")
+	if err != nil {
+		logutils.Error("Delete Default Profile", logutils.Fields{
+			"error":        err,
+			"rb-name":      name,
+			"rb-version":   version,
+			"profile-name": "default",
+		})
+		return pkgerrors.Wrap(err, "Deleting default profile")
 	}
 
 	return nil

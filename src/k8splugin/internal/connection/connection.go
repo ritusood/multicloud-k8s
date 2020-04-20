@@ -20,9 +20,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io/ioutil"
-	"path/filepath"
 
-	"k8splugin/internal/db"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/db"
 
 	pkgerrors "github.com/pkg/errors"
 )
@@ -32,7 +31,13 @@ type Connection struct {
 	CloudRegion           string                 `json:"cloud-region"`
 	CloudOwner            string                 `json:"cloud-owner"`
 	Kubeconfig            string                 `json:"kubeconfig"`
-	OtherConnectivityList map[string]interface{} `json:"other-connectivity-list"`
+	OtherConnectivityList ConnectivityRecordList `json:"other-connectivity-list"`
+}
+
+// ConnectivityRecordList covers lists of connectivity records
+// and any other data that needs to be stored
+type ConnectivityRecordList struct {
+	ConnectivityRecords []map[string]string `json:"connectivity-records"`
 }
 
 // ConnectionKey is the key structure that is used in the database
@@ -56,6 +61,7 @@ type ConnectionManager interface {
 	Create(c Connection) (Connection, error)
 	Get(name string) (Connection, error)
 	Delete(name string) error
+	GetConnectivityRecordByName(connname string, name string) (map[string]string, error)
 }
 
 // ConnectionClient implements the  ConnectionManager
@@ -65,7 +71,7 @@ type ConnectionClient struct {
 	tagMeta   string
 }
 
-// New ConnectionClient returns an instance of the  ConnectionClient
+// NewConnectionClient returns an instance of the  ConnectionClient
 // which implements the  ConnectionManager
 func NewConnectionClient() *ConnectionClient {
 	return &ConnectionClient{
@@ -117,6 +123,38 @@ func (v *ConnectionClient) Get(name string) (Connection, error) {
 	return Connection{}, pkgerrors.New("Error getting Connection")
 }
 
+// GetConnectivityRecordByName returns Connection for corresponding to name
+// JSON example:
+// "connectivity-records" :
+// 	[
+// 		{
+// 			“connectivity-record-name” : “<name>”,   // example: OVN
+// 			“FQDN-or-ip” : “<fqdn>”,
+// 			“ca-cert-to-verify-server” : “<contents of CA certificate to validate the OVN server>”,
+// 			“ssl-initiator” : “<true/false”>,
+// 			“user-name”:  “<user name>”,   //valid if ssl-initator is false
+// 			“password” : “<password>”,      // valid if ssl-initiator is false
+// 			“private-key” :  “<contents of private key in PEM>”, // valid if ssl-initiator is true
+// 			“cert-to-present” :  “<contents of certificate to present to server>” , //valid if ssl-initiator is true
+// 		},
+// 	]
+func (v *ConnectionClient) GetConnectivityRecordByName(connectionName string,
+	connectivityRecordName string) (map[string]string, error) {
+
+	conn, err := v.Get(connectionName)
+	if err != nil {
+		return nil, pkgerrors.Wrap(err, "Error getting connection")
+	}
+
+	for _, value := range conn.OtherConnectivityList.ConnectivityRecords {
+		if connectivityRecordName == value["connectivity-record-name"] {
+			return value, nil
+		}
+	}
+
+	return nil, pkgerrors.New("Connectivity record " + connectivityRecordName + " not found")
+}
+
 // Delete the Connection from database
 func (v *ConnectionClient) Delete(name string) error {
 
@@ -132,7 +170,7 @@ func (v *ConnectionClient) Delete(name string) error {
 // Download the connection information onto a kubeconfig file
 // The file is named after the name of the connection and will
 // be placed in the provided parent directory
-func (v *ConnectionClient) Download(name string, parentdir string) (string, error) {
+func (v *ConnectionClient) Download(name string) (string, error) {
 
 	conn, err := v.Get(name)
 	if err != nil {
@@ -145,11 +183,17 @@ func (v *ConnectionClient) Download(name string, parentdir string) (string, erro
 		return "", pkgerrors.Wrap(err, "Converting from base64")
 	}
 
-	target := filepath.Join(parentdir, conn.CloudRegion)
-	err = ioutil.WriteFile(target, kubeContent, 0644)
+	//Create temp file to write kubeconfig
+	//Assume this file will be deleted after usage by the consumer
+	tempF, err := ioutil.TempFile("", "kube-config-temp-")
+	if err != nil {
+		return "", pkgerrors.Wrap(err, "Creating temp file")
+	}
+
+	_, err = tempF.Write(kubeContent)
 	if err != nil {
 		return "", pkgerrors.Wrap(err, "Writing kubeconfig to file")
 	}
 
-	return target, nil
+	return tempF.Name(), nil
 }

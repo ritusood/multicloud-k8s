@@ -14,24 +14,29 @@ limitations under the License.
 package main
 
 import (
-	"log"
-
 	pkgerrors "github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	utils "k8splugin/internal"
-	"k8splugin/internal/app"
-	"k8splugin/internal/helm"
+	utils "github.com/onap/multicloud-k8s/src/k8splugin/internal"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/config"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/helm"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/plugin"
 )
+
+// Compile time check to see if genericPlugin implements the correct interface
+var _ plugin.Reference = genericPlugin{}
+
+// ExportedVariable is what we will look for when calling the generic plugin
+var ExportedVariable genericPlugin
 
 type genericPlugin struct {
 }
 
 // Create deployment object in a specific Kubernetes cluster
-func (g genericPlugin) Create(yamlFilePath string, namespace string, client *app.KubernetesClient) (string, error) {
+func (g genericPlugin) Create(yamlFilePath string, namespace string, client plugin.KubernetesConnector) (string, error) {
 	if namespace == "" {
 		namespace = "default"
 	}
@@ -53,6 +58,20 @@ func (g genericPlugin) Create(yamlFilePath string, namespace string, client *app
 		return "", pkgerrors.Wrap(err, "Mapping kind to resource error")
 	}
 
+	//Add the tracking label to all resources created here
+	labels := unstruct.GetLabels()
+	//Check if labels exist for this object
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels[config.GetConfiguration().KubernetesLabelName] = client.GetInstanceID()
+	unstruct.SetLabels(labels)
+
+	// This checks if the resource we are creating has a podSpec in it
+	// Eg: Deployment, StatefulSet, Job etc..
+	// If a PodSpec is found, the label will be added to it too.
+	plugin.TagPodsIfPresent(unstruct, client.GetInstanceID())
+
 	gvr := mapping.Resource
 	var createdObj *unstructured.Unstructured
 
@@ -72,15 +91,56 @@ func (g genericPlugin) Create(yamlFilePath string, namespace string, client *app
 	return createdObj.GetName(), nil
 }
 
-// Delete an existing deployment hosted in a specific Kubernetes cluster
-func (g genericPlugin) Delete(resource helm.KubernetesResource, namespace string, client *app.KubernetesClient) error {
+// Get an existing resource hosted in a specific Kubernetes cluster
+func (g genericPlugin) Get(resource helm.KubernetesResource,
+	namespace string, client plugin.KubernetesConnector) (string, error) {
 	if namespace == "" {
 		namespace = "default"
 	}
 
-	deletePolicy := metav1.DeletePropagationForeground
-	opts := &metav1.DeleteOptions{
-		PropagationPolicy: &deletePolicy,
+	dynClient := client.GetDynamicClient()
+	mapper := client.GetMapper()
+
+	mapping, err := mapper.RESTMapping(schema.GroupKind{
+		Group: resource.GVK.Group,
+		Kind:  resource.GVK.Kind,
+	}, resource.GVK.Version)
+	if err != nil {
+		return "", pkgerrors.Wrap(err, "Mapping kind to resource error")
+	}
+
+	gvr := mapping.Resource
+	opts := metav1.GetOptions{}
+	var unstruct *unstructured.Unstructured
+	switch mapping.Scope.Name() {
+	case meta.RESTScopeNameNamespace:
+		unstruct, err = dynClient.Resource(gvr).Namespace(namespace).Get(resource.Name, opts)
+	case meta.RESTScopeNameRoot:
+		unstruct, err = dynClient.Resource(gvr).Get(resource.Name, opts)
+	default:
+		return "", pkgerrors.New("Got an unknown RESTSCopeName for mapping: " + resource.GVK.String())
+	}
+
+	if err != nil {
+		return "", pkgerrors.Wrap(err, "Delete object error")
+	}
+
+	return unstruct.GetName(), nil
+}
+
+// List all existing resources of the GroupVersionKind
+// TODO: Implement in seperate patch
+func (g genericPlugin) List(gvk schema.GroupVersionKind, namespace string,
+	client plugin.KubernetesConnector) ([]helm.KubernetesResource, error) {
+
+	var returnData []helm.KubernetesResource
+	return returnData, nil
+}
+
+// Delete an existing resource hosted in a specific Kubernetes cluster
+func (g genericPlugin) Delete(resource helm.KubernetesResource, namespace string, client plugin.KubernetesConnector) error {
+	if namespace == "" {
+		namespace = "default"
 	}
 
 	dynClient := client.GetDynamicClient()
@@ -95,7 +155,10 @@ func (g genericPlugin) Delete(resource helm.KubernetesResource, namespace string
 	}
 
 	gvr := mapping.Resource
-	log.Printf("Using gvr: %s, %s, %s", gvr.Group, gvr.Version, gvr.Resource)
+	deletePolicy := metav1.DeletePropagationForeground
+	opts := &metav1.DeleteOptions{
+		PropagationPolicy: &deletePolicy,
+	}
 
 	switch mapping.Scope.Name() {
 	case meta.RESTScopeNameNamespace:
@@ -111,6 +174,3 @@ func (g genericPlugin) Delete(resource helm.KubernetesResource, namespace string
 	}
 	return nil
 }
-
-// ExportedVariable is what we will look for when calling the generic plugin
-var ExportedVariable genericPlugin

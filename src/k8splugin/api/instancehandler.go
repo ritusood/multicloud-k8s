@@ -19,7 +19,8 @@ import (
 	"io"
 	"net/http"
 
-	"k8splugin/internal/app"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/app"
+	log "github.com/onap/multicloud-k8s/src/k8splugin/internal/logutils"
 
 	"github.com/gorilla/mux"
 	pkgerrors "github.com/pkg/errors"
@@ -36,14 +37,25 @@ func (i instanceHandler) validateBody(body interface{}) error {
 	switch b := body.(type) {
 	case app.InstanceRequest:
 		if b.CloudRegion == "" {
+			log.Error("CreateVnfRequest Bad Request", log.Fields{
+				"cloudRegion": "Missing CloudRegion in POST request",
+			})
 			werr := pkgerrors.Wrap(errors.New("Invalid/Missing CloudRegion in POST request"), "CreateVnfRequest bad request")
 			return werr
 		}
 		if b.RBName == "" || b.RBVersion == "" {
+			log.Error("CreateVnfRequest Bad Request", log.Fields{
+				"message":   "One of RBName, RBVersion is missing",
+				"RBName":    b.RBName,
+				"RBVersion": b.RBVersion,
+			})
 			werr := pkgerrors.Wrap(errors.New("Invalid/Missing resource bundle parameters in POST request"), "CreateVnfRequest bad request")
 			return werr
 		}
 		if b.ProfileName == "" {
+			log.Error("CreateVnfRequest bad request", log.Fields{
+				"ProfileName": "Missing profile name in POST request",
+			})
 			werr := pkgerrors.Wrap(errors.New("Invalid/Missing profile name in POST request"), "CreateVnfRequest bad request")
 			return werr
 		}
@@ -57,9 +69,15 @@ func (i instanceHandler) createHandler(w http.ResponseWriter, r *http.Request) {
 	err := json.NewDecoder(r.Body).Decode(&resource)
 	switch {
 	case err == io.EOF:
+		log.Error("Body Empty", log.Fields{
+			"error": io.EOF,
+		})
 		http.Error(w, "Body empty", http.StatusBadRequest)
 		return
 	case err != nil:
+		log.Error("Error unmarshaling Body", log.Fields{
+			"error": err,
+		})
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
@@ -67,12 +85,19 @@ func (i instanceHandler) createHandler(w http.ResponseWriter, r *http.Request) {
 	// Check body for expected parameters
 	err = i.validateBody(resource)
 	if err != nil {
+		log.Error("Invalid Parameters in Body", log.Fields{
+			"error": err,
+		})
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 
 	resp, err := i.client.Create(resource)
 	if err != nil {
+		log.Error("Error Creating Resource", log.Fields{
+			"error":    err,
+			"resource": resource,
+		})
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -81,6 +106,10 @@ func (i instanceHandler) createHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 	err = json.NewEncoder(w).Encode(resp)
 	if err != nil {
+		log.Error("Error Marshaling Response", log.Fields{
+			"error":    err,
+			"response": resp,
+		})
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -93,6 +122,10 @@ func (i instanceHandler) getHandler(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := i.client.Get(id)
 	if err != nil {
+		log.Error("Error getting Instance", log.Fields{
+			"error": err,
+			"id":    id,
+		})
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -101,6 +134,72 @@ func (i instanceHandler) getHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	err = json.NewEncoder(w).Encode(resp)
 	if err != nil {
+		log.Error("Error Marshaling Response", log.Fields{
+			"error":    err,
+			"response": resp,
+		})
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+// statusHandler retrieves status about an instance via the ID
+func (i instanceHandler) statusHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["instID"]
+
+	resp, err := i.client.Status(id)
+	if err != nil {
+		log.Error("Error getting Status", log.Fields{
+			"error": err,
+			"id":    id,
+		})
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	err = json.NewEncoder(w).Encode(resp)
+	if err != nil {
+		log.Error("Error Marshaling Response", log.Fields{
+			"error":    err,
+			"response": resp,
+		})
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+// listHandler retrieves information about an instance via the ID
+func (i instanceHandler) listHandler(w http.ResponseWriter, r *http.Request) {
+
+	//If parameters are not provided, they are sent as empty strings
+	//Which will list all instances
+	rbName := r.FormValue("rb-name")
+	rbVersion := r.FormValue("rb-version")
+	profileName := r.FormValue("profile-name")
+
+	resp, err := i.client.List(rbName, rbVersion, profileName)
+	if err != nil {
+		log.Error("Error listing instances", log.Fields{
+			"error":        err,
+			"rb-name":      rbName,
+			"rb-version":   rbVersion,
+			"profile-name": profileName,
+		})
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	err = json.NewEncoder(w).Encode(resp)
+	if err != nil {
+		log.Error("Error Marshaling Response", log.Fields{
+			"error":    err,
+			"response": resp,
+		})
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -113,6 +212,9 @@ func (i instanceHandler) deleteHandler(w http.ResponseWriter, r *http.Request) {
 
 	err := i.client.Delete(id)
 	if err != nil {
+		log.Error("Error Deleting Instance", log.Fields{
+			"error": err,
+		})
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -120,72 +222,3 @@ func (i instanceHandler) deleteHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 }
-
-// // UpdateHandler method to update a VNF instance.
-// func UpdateHandler(w http.ResponseWriter, r *http.Request) {
-// 	vars := mux.Vars(r)
-// 	id := vars["vnfInstanceId"]
-
-// 	var resource UpdateVnfRequest
-
-// 	if r.Body == nil {
-// 		http.Error(w, "Body empty", http.StatusBadRequest)
-// 		return
-// 	}
-
-// 	err := json.NewDecoder(r.Body).Decode(&resource)
-// 	if err != nil {
-// 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-// 		return
-// 	}
-
-// 	err = validateBody(resource)
-// 	if err != nil {
-// 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-// 		return
-// 	}
-
-// 	kubeData, err := utils.ReadCSARFromFileSystem(resource.CsarID)
-
-// 	if kubeData.Deployment == nil {
-// 		werr := pkgerrors.Wrap(err, "Update VNF deployment error")
-// 		http.Error(w, werr.Error(), http.StatusInternalServerError)
-// 		return
-// 	}
-// 	kubeData.Deployment.SetUID(types.UID(id))
-
-// 	if err != nil {
-// 		werr := pkgerrors.Wrap(err, "Update VNF deployment information error")
-// 		http.Error(w, werr.Error(), http.StatusInternalServerError)
-// 		return
-// 	}
-
-// 	// (TODO): Read kubeconfig for specific Cloud Region from local file system
-// 	// if present or download it from AAI
-// 	s, err := NewVNFInstanceService("../kubeconfig/config")
-// 	if err != nil {
-// 		http.Error(w, err.Error(), http.StatusInternalServerError)
-// 		return
-// 	}
-
-// 	err = s.Client.UpdateDeployment(kubeData.Deployment, resource.Namespace)
-// 	if err != nil {
-// 		werr := pkgerrors.Wrap(err, "Update VNF error")
-
-// 		http.Error(w, werr.Error(), http.StatusInternalServerError)
-// 		return
-// 	}
-
-// 	resp := UpdateVnfResponse{
-// 		DeploymentID: id,
-// 	}
-
-// 	w.Header().Set("Content-Type", "application/json")
-// 	w.WriteHeader(http.StatusCreated)
-
-// 	err = json.NewEncoder(w).Encode(resp)
-// 	if err != nil {
-// 		werr := pkgerrors.Wrap(err, "Parsing output of new VNF error")
-// 		http.Error(w, werr.Error(), http.StatusInternalServerError)
-// 	}
-// }

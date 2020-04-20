@@ -8,33 +8,16 @@
 # http://www.apache.org/licenses/LICENSE-2.0
 ##############################################################################
 
+set -o errexit
 set -o nounset
 set -o pipefail
 
-source /etc/environment
+source _functions.sh
 
-k8s_path="$(git rev-parse --show-toplevel)"
-export GOPATH=$k8s_path
-export GO111MODULE=on
-
-echo "Starting mongo services"
-docker-compose kill
-docker-compose up -d mongo
-export DATABASE_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(docker ps -aqf "name=mongo"))
-export no_proxy=${no_proxy:-},$DATABASE_IP
-export NO_PROXY=${NO_PROXY:-},$DATABASE_IP
-
-echo "Compiling source code"
-pushd $k8s_path/src/k8splugin/
-cat << EOF > k8sconfig.json
-{
-    "database-address":     "$DATABASE_IP",
-    "database-type": "mongo",
-    "plugin-dir": "$(pwd)/plugins",
-    "service-port": "9015",
-    "kube-config-dir": "$(pwd)/kubeconfigs"
-}
-EOF
-make all
-./k8plugin
-popd
+#
+# Start k8splugin from containers. build.sh should be run prior this script.
+#
+stop_all
+start_mongo
+generate_k8sconfig
+start_all

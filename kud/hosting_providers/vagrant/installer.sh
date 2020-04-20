@@ -9,12 +9,22 @@
 ##############################################################################
 
 set -o errexit
+set -o nounset
 set -o pipefail
+
+INSTALLER_DIR="$(readlink -f "$(dirname "${BASH_SOURCE[0]}")")"
+
+source ${INSTALLER_DIR}/../../tests/_functions.sh
 
 # _install_go() - Install GoLang package
 function _install_go {
     version=$(grep "go_version" ${kud_playbooks}/kud-vars.yml | awk -F "'" '{print $2}')
     local tarball=go$version.linux-amd64.tar.gz
+
+    #gcc is required for go apps compilation
+    if ! which gcc; then
+        sudo apt-get install -y gcc
+    fi
 
     if $(go version &>/dev/null); then
         return
@@ -40,12 +50,13 @@ function _install_pip {
 
 # _install_ansible() - Install and Configure Ansible program
 function _install_ansible {
-    sudo mkdir -p /etc/ansible/
     if $(ansible --version &>/dev/null); then
-        return
+        sudo pip uninstall -y ansible
     fi
     _install_pip
-    sudo -E pip install ansible
+    local version=$(grep "ansible_version" ${kud_playbooks}/kud-vars.yml | awk -F ': ' '{print $2}')
+    sudo mkdir -p /etc/ansible/
+    sudo -E pip install ansible==$version
 }
 
 # _install_docker() - Download and install docker-engine
@@ -62,15 +73,15 @@ function _install_docker {
     sudo apt-get install -y docker-ce
 
     sudo mkdir -p /etc/systemd/system/docker.service.d
-    if [ $http_proxy ]; then
+    if [ ${http_proxy:-} ]; then
         echo "[Service]" | sudo tee /etc/systemd/system/docker.service.d/http-proxy.conf
         echo "Environment=\"HTTP_PROXY=$http_proxy\"" | sudo tee --append /etc/systemd/system/docker.service.d/http-proxy.conf
     fi
-    if [ $https_proxy ]; then
+    if [ ${https_proxy:-} ]; then
         echo "[Service]" | sudo tee /etc/systemd/system/docker.service.d/https-proxy.conf
         echo "Environment=\"HTTPS_PROXY=$https_proxy\"" | sudo tee --append /etc/systemd/system/docker.service.d/https-proxy.conf
     fi
-    if [ $no_proxy ]; then
+    if [ ${no_proxy:-} ]; then
         echo "[Service]" | sudo tee /etc/systemd/system/docker.service.d/no-proxy.conf
         echo "Environment=\"NO_PROXY=$no_proxy\"" | sudo tee --append /etc/systemd/system/docker.service.d/no-proxy.conf
     fi
@@ -78,7 +89,6 @@ function _install_docker {
     echo "DOCKER_OPTS=\"-H tcp://0.0.0.0:2375 -H unix:///var/run/docker.sock --max-concurrent-downloads $max_concurrent_downloads \"" | sudo tee --append /etc/default/docker
     if [[ -z $(groups | grep docker) ]]; then
         sudo usermod -aG docker $USER
-        newgrp docker
     fi
 
     sudo systemctl restart docker
@@ -86,13 +96,12 @@ function _install_docker {
 }
 
 function _set_environment_file {
-    ansible_ifconfig=$(ansible ovn-central[0] -i $kud_inventory -m shell -a "ifconfig eth1 |grep \"inet addr\" |awk '{print \$2}' |awk -F: '{print \$2}'")
-    if [[ $ansible_ifconfig != *CHANGED* ]]; then
-        echo "Fail to get the OVN central IP address from eth1 nic"
-        exit
-    fi
-    echo "export OVN_CENTRAL_ADDRESS=$(echo ${ansible_ifconfig#*>>} | tr '\n' ':')6641" | sudo tee --append /etc/environment
+    # By default ovn central interface is the first active network interface on localhost. If other wanted, need to export this variable in aio.sh or Vagrant file.
+    OVN_CENTRAL_INTERFACE="${OVN_CENTRAL_INTERFACE:-$(ip addr show | awk '/inet.*brd/{print $NF; exit}')}"
+    echo "export OVN_CENTRAL_INTERFACE=${OVN_CENTRAL_INTERFACE}" | sudo tee --append /etc/environment
+    echo "export OVN_CENTRAL_ADDRESS=$(get_ovn_central_address)" | sudo tee --append /etc/environment
     echo "export KUBE_CONFIG_DIR=/opt/kubeconfig" | sudo tee --append /etc/environment
+    echo "export CSAR_DIR=/opt/csar" | sudo tee --append /etc/environment
 }
 
 # install_k8s() - Install Kubernetes using kubespray tool
@@ -102,7 +111,8 @@ function install_k8s {
     version=$(grep "kubespray_version" ${kud_playbooks}/kud-vars.yml | awk -F ': ' '{print $2}')
     local_release_dir=$(grep "local_release_dir" $kud_inventory_folder/group_vars/k8s-cluster.yml | awk -F "\"" '{print $2}')
     local tarball=v$version.tar.gz
-    sudo apt-get install -y sshpass
+    sudo apt-get install -y sshpass make unzip # install make to run mitogen target and unzip is mitogen playbook dependency
+    sudo apt-get install -y gnupg2 software-properties-common
     _install_docker
     _install_ansible
     wget https://github.com/kubernetes-incubator/kubespray/archive/$tarball
@@ -112,18 +122,21 @@ function install_k8s {
     sudo mkdir -p ${local_release_dir}/containers
     rm $tarball
 
-    sudo -E pip install -r $dest_folder/kubespray-$version/requirements.txt
+    pushd $dest_folder/kubespray-$version/
+    sudo -E pip install -r ./requirements.txt
+    make mitogen
+    popd
     rm -f $kud_inventory_folder/group_vars/all.yml 2> /dev/null
-    if [[ -n "${verbose}" ]]; then
+    if [[ -n "${verbose:-}" ]]; then
         echo "kube_log_level: 5" | tee $kud_inventory_folder/group_vars/all.yml
     else
         echo "kube_log_level: 2" | tee $kud_inventory_folder/group_vars/all.yml
     fi
     echo "kubeadm_enabled: true" | tee --append $kud_inventory_folder/group_vars/all.yml
-    if [[ -n "${http_proxy}" ]]; then
+    if [[ -n "${http_proxy:-}" ]]; then
         echo "http_proxy: \"$http_proxy\"" | tee --append $kud_inventory_folder/group_vars/all.yml
     fi
-    if [[ -n "${https_proxy}" ]]; then
+    if [[ -n "${https_proxy:-}" ]]; then
         echo "https_proxy: \"$https_proxy\"" | tee --append $kud_inventory_folder/group_vars/all.yml
     fi
     ansible-playbook $verbose -i $kud_inventory $dest_folder/kubespray-$version/cluster.yml --become --become-user=root | sudo tee $log_folder/setup-kubernetes.log
@@ -131,24 +144,30 @@ function install_k8s {
     # Configure environment
     mkdir -p $HOME/.kube
     cp $kud_inventory_folder/artifacts/admin.conf $HOME/.kube/config
+    # Copy Kubespray kubectl to be usable in host running Ansible. Requires kubectl_localhost: true in inventory/group_vars/k8s-cluster.yml
+    sudo cp $kud_inventory_folder/artifacts/kubectl /usr/local/bin/
 }
 
 # install_addons() - Install Kubenertes AddOns
 function install_addons {
+    source /etc/environment
     echo "Installing Kubernetes AddOns"
     _install_ansible
     sudo ansible-galaxy install $verbose -r $kud_infra_folder/galaxy-requirements.yml --ignore-errors
-
     ansible-playbook $verbose -i $kud_inventory $kud_playbooks/configure-kud.yml | sudo tee $log_folder/setup-kud.log
-    for addon in ${KUD_ADDONS:-virtlet ovn4nfv}; do
+    for addon in ${KUD_ADDONS:-virtlet ovn4nfv nfd sriov qat}; do
         echo "Deploying $addon using configure-$addon.yml playbook.."
         ansible-playbook $verbose -i $kud_inventory $kud_playbooks/configure-${addon}.yml | sudo tee $log_folder/setup-${addon}.log
-        if [[ "${testing_enabled}" == "true" ]]; then
+    done
+    echo "Run the test cases if testing_enabled is set to true."
+    if [[ "${testing_enabled}" == "true" ]]; then
+        for addon in ${KUD_ADDONS:-virtlet ovn4nfv nfd sriov qat}; do
             pushd $kud_tests
             bash ${addon}.sh
             popd
-        fi
-    done
+        done
+    fi
+    echo "Add-ons deployment complete..."
 }
 
 # install_plugin() - Install ONAP Multicloud Kubernetes plugin
@@ -160,15 +179,13 @@ function install_plugin {
 
     sudo mkdir -p /opt/{kubeconfig,consul/config}
     sudo cp $HOME/.kube/config /opt/kubeconfig/kud
-    _set_environment_file
-    source /etc/environment
 
     pushd $kud_folder/../../../deployments
     sudo ./build.sh
     if [[ "${testing_enabled}" == "true" ]]; then
-        docker-compose up -d
+        sudo ./start.sh
         pushd $kud_tests
-        for functional_test in plugin plugin_edgex; do
+        for functional_test in plugin plugin_edgex plugin_fw; do
             bash ${functional_test}.sh
         done
         popd
@@ -194,6 +211,7 @@ function _print_kubernetes_info {
     echo "Admin password: secret" >> $k8s_info_file
 }
 
+sudo -k # forgot sudo password
 if ! sudo -n "true"; then
     echo ""
     echo "passwordless sudo is needed for '$(id -nu)' user."
@@ -204,35 +222,37 @@ if ! sudo -n "true"; then
     exit 1
 fi
 
-if [[ -n "${KUD_DEBUG}" ]]; then
+verbose=""
+if [[ -n "${KUD_DEBUG:-}" ]]; then
     set -o xtrace
     verbose="-vvv"
 fi
 
 # Configuration values
 log_folder=/var/log/kud
-kud_folder=$(pwd)
+kud_folder=${INSTALLER_DIR}
 kud_infra_folder=$kud_folder/../../deployment_infra
 export kud_inventory_folder=$kud_folder/inventory
 kud_inventory=$kud_inventory_folder/hosts.ini
 kud_playbooks=$kud_infra_folder/playbooks
-kud_tests=$kud_folder/tests
+kud_tests=$kud_folder/../../tests
 k8s_info_file=$kud_folder/k8s_info.log
 testing_enabled=${KUD_ENABLE_TESTS:-false}
-
 sudo mkdir -p $log_folder
 sudo mkdir -p /opt/csar
 sudo chown -R $USER /opt/csar
-echo "export CSAR_DIR=/opt/csar" | sudo tee --append /etc/environment
-
 # Install dependencies
 # Setup proxy variables
 if [ -f $kud_folder/sources.list ]; then
     sudo mv /etc/apt/sources.list /etc/apt/sources.list.backup
     sudo cp $kud_folder/sources.list /etc/apt/sources.list
 fi
+echo "Removing ppa for jonathonf/python-3.6"
+sudo ls /etc/apt/sources.list.d/ || true
+sudo find /etc/apt/sources.list.d -maxdepth 1 -name '*jonathonf*' -delete || true
 sudo apt-get update
 install_k8s
+_set_environment_file
 install_addons
 if ${KUD_PLUGIN_ENABLED:-false}; then
     install_plugin

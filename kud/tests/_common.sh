@@ -27,13 +27,11 @@ unprotected_private_net=unprotected-private-net
 protected_private_net=protected-private-net
 ovn_multus_network_name=ovn-networkobj
 rbd_metadata=rbd_metatada.json
-rbd_content_tarball=vault-consul-dev.tar
 rbp_metadata=rbp_metatada.json
 rbp_instance=rbp_instance.json
-rbp_content_tarball=profile.tar
 
 # vFirewall vars
-demo_artifacts_version=1.3.1
+demo_artifacts_version=1.5.0
 vfw_private_ip_0='192.168.10.3'
 vfw_private_ip_1='192.168.20.2'
 vfw_private_ip_2='10.10.100.3'
@@ -47,6 +45,7 @@ protected_net_gw='192.168.20.100'
 protected_net_cidr='192.168.20.0/24'
 protected_private_net_cidr='192.168.10.0/24'
 onap_private_net_cidr='10.10.0.0/16'
+sink_ipaddr='192.168.20.250'
 
 # populate_CSAR_containers_vFW() - This function creates the content of CSAR file
 # required for vFirewal using only containers
@@ -278,39 +277,43 @@ spec:
 MULTUS_NET
 
     cat << NET > $unprotected_private_net.yaml
-apiVersion: v1
-kind: onapNetwork
+apiVersion: k8s.plugin.opnfv.org/v1alpha1
+kind: Network
+
 metadata:
   name: $unprotected_private_net
-  cnitype : ovn4nfvk8s
 spec:
-  name: $unprotected_private_net
-  subnet: $protected_private_net_cidr
-  gateway: 192.168.10.1/24
+  cniType : ovn4nfv
+  ipv4Subnets:
+  - subnet: $protected_private_net_cidr
+    name: subnet1
+    gateway: 192.168.10.1/24
 NET
 
     cat << NET > $protected_private_net.yaml
-apiVersion: v1
-kind: onapNetwork
+apiVersion: k8s.plugin.opnfv.org/v1alpha1
+kind: Network
 metadata:
   name: $protected_private_net
-  cnitype : ovn4nfvk8s
 spec:
-  name: $protected_private_net
-  subnet: $protected_net_cidr
-  gateway: $protected_net_gw/24
+  cniType : ovn4nfv
+  ipv4Subnets:
+  - subnet: $protected_net_cidr
+    name: subnet1
+    gateway: $protected_net_gw/24
 NET
 
     cat << NET > $onap_private_net.yaml
-apiVersion: v1
-kind: onapNetwork
+apiVersion: k8s.plugin.opnfv.org/v1alpha1
+kind: Network
 metadata:
   name: $onap_private_net
-  cnitype : ovn4nfvk8s
 spec:
-  name: $onap_private_net
-  subnet: $onap_private_net_cidr
-  gateway: 10.10.0.1/16
+  cniType : ovn4nfv
+  ipv4Subnets:
+  - subnet: $onap_private_net_cidr
+    name: subnet1
+    gateway: 10.10.0.1/16
 NET
 
     proxy="apt:"
@@ -323,6 +326,7 @@ NET
             - export dcae_collector_port=$dcae_collector_port
             - export protected_net_gw=$protected_net_gw
             - export protected_private_net_cidr=$protected_private_net_cidr
+            - export sink_ipaddr=$sink_ipaddr
 "
     if [[ -n "${http_proxy+x}" ]]; then
         proxy+="
@@ -381,10 +385,10 @@ spec:
           $ssh_key
         VirtletRootVolumeSize: 5Gi
         k8s.v1.cni.cncf.io/networks: '[{ "name": "$ovn_multus_network_name"}]'
-        ovnNetwork: '[
+        k8s.plugin.opnfv.org/nfn-network: '{ "type": "ovn4nfv", "interface": [
             { "name": "$unprotected_private_net", "ipAddress": "$vpg_private_ip_0", "interface": "eth1" , "defaultGateway": "false"},
             { "name": "$onap_private_net", "ipAddress": "$vpg_private_ip_1", "interface": "eth2" , "defaultGateway": "false"}
-        ]'
+        ]}'
         kubernetes.io/target-runtime: virtlet.cloud
     spec:
       affinity:
@@ -449,11 +453,11 @@ spec:
           $ssh_key
         VirtletRootVolumeSize: 5Gi
         k8s.v1.cni.cncf.io/networks: '[{ "name": "$ovn_multus_network_name"}]'
-        ovnNetwork: '[
+        k8s.plugin.opnfv.org/nfn-network: '{ "type": "ovn4nfv", "interface": [
             { "name": "$unprotected_private_net", "ipAddress": "$vfw_private_ip_0", "interface": "eth1" , "defaultGateway": "false"},
             { "name": "$protected_private_net", "ipAddress": "$vfw_private_ip_1", "interface": "eth2", "defaultGateway": "false" },
             { "name": "$onap_private_net", "ipAddress": "$vfw_private_ip_2", "interface": "eth3" , "defaultGateway": "false"}
-        ]'
+        ]}'
         kubernetes.io/target-runtime: virtlet.cloud
     spec:
       affinity:
@@ -476,6 +480,16 @@ spec:
             memory: 4Gi
 DEPLOYMENT
 
+    cat << CONFIGMAP > sink_configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sink-configmap
+data:
+  protected_net_gw: $protected_net_gw
+  protected_private_net_cidr: $protected_private_net_cidr
+CONFIGMAP
+
     cat << DEPLOYMENT > $sink_deployment_name.yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -496,19 +510,23 @@ spec:
         context: darkstat
       annotations:
         k8s.v1.cni.cncf.io/networks: '[{ "name": "$ovn_multus_network_name"}]'
-        ovnNetwork: '[
+        k8s.plugin.opnfv.org/nfn-network: '{ "type": "ovn4nfv", "interface": [
             { "name": "$protected_private_net", "ipAddress": "$vsn_private_ip_0", "interface": "eth1", "defaultGateway": "false" },
             { "name": "$onap_private_net", "ipAddress": "$vsn_private_ip_1", "interface": "eth2" , "defaultGateway": "false"}
-        ]'
+        ]}'
     spec:
       containers:
       - name: $sink_deployment_name
-        image: electrocucaracha/sink
-        imagePullPolicy: IfNotPresent
+        image: rtsood/onap-vfw-demo-sink:0.2.0
+        envFrom:
+        - configMapRef:
+            name: sink-configmap
+        imagePullPolicy: Always
         tty: true
         stdin: true
         securityContext:
           privileged: true
+
       - name: darkstat
         image: electrocucaracha/darkstat
         imagePullPolicy: IfNotPresent
@@ -1046,27 +1064,29 @@ spec:
 MULTUS_NET
 
     cat << NETWORK > ovn-port-net.yaml
-apiVersion: v1
-kind: onapNetwork
+apiVersion: k8s.plugin.opnfv.org/v1alpha1
+kind: Network
 metadata:
   name: ovn-port-net
-  cnitype : ovn4nfvk8s
 spec:
-  name: ovn-port-net
-  subnet: 172.16.33.0/24
-  gateway: 172.16.33.1/24
+  cniType : ovn4nfv
+  ipv4Subnets:
+  - subnet: 172.16.33.0/24
+    name: subnet1
+    gateway: 172.16.33.1/24
 NETWORK
 
     cat << NETWORK > ovn-priv-net.yaml
-apiVersion: v1
-kind: onapNetwork
+apiVersion: k8s.plugin.opnfv.org/v1alpha1
+kind: Network
 metadata:
   name: ovn-priv-net
-  cnitype : ovn4nfvk8s
 spec:
-  name: ovn-priv-net
-  subnet: 172.16.44.0/24
-  gateway: 172.16.44.1/24
+  cniType : ovn4nfv
+  ipv4Subnets:
+  - subnet: 172.16.44.0/24
+    name: subnet1
+    gateway: 172.16.44.1/24
 NETWORK
 
     cat << DEPLOYMENT > $ovn4nfv_deployment_name.yaml
@@ -1087,8 +1107,8 @@ spec:
         app: ovn4nfv
       annotations:
         k8s.v1.cni.cncf.io/networks: '[{ "name": "$ovn_multus_network_name"}]'
-        ovnNetwork: '[{ "name": "ovn-port-net", "interface": "net0" , "defaultGateway": "false"},
-                      { "name": "ovn-priv-net", "interface": "net1" , "defaultGateway": "false"}]'
+        k8s.plugin.opnfv.org/nfn-network: '{ "type": "ovn4nfv", "interface": [{ "name": "ovn-port-net", "interface": "net0" , "defaultGateway": "false"},
+                      { "name": "ovn-priv-net", "interface": "net1" , "defaultGateway": "false"}]}'
     spec:
       containers:
       - name: $ovn4nfv_deployment_name
@@ -1103,16 +1123,50 @@ DEPLOYMENT
 # populate_CSAR_rbdefinition() - Function that populates CSAR folder
 # for testing resource bundle definition
 function populate_CSAR_rbdefinition {
-    local csar_id=$1
-
-    _checks_args $csar_id
-    pushd ${CSAR_DIR}/${csar_id}
+    _checks_args "$1"
+    pushd "${CSAR_DIR}/$1"
     print_msg "Create Helm Chart Archives"
-    rm -f ${rbd_content_tarball}.gz
-    rm -f ${rbp_content_tarball}.gz
-    tar -cf $rbd_content_tarball -C $test_folder/vnfs/testrb/helm vault-consul-dev
-    tar -cf $rbp_content_tarball -C $test_folder/vnfs/testrb/helm/profile .
-    gzip $rbp_content_tarball
-    gzip $rbd_content_tarball
+    rm -f *.tar.gz
+    tar -czf rb_profile.tar.gz -C $test_folder/vnfs/testrb/helm/profile .
+    #Creates vault-consul-dev-0.0.0.tgz
+    helm package $test_folder/vnfs/testrb/helm/vault-consul-dev --version 0.0.0
     popd
 }
+
+# populate_CSAR_edgex_rbdefinition() - Function that populates CSAR folder
+# for testing resource bundle definition of edgex scenario
+function populate_CSAR_edgex_rbdefinition {
+    _checks_args "$1"
+    pushd "${CSAR_DIR}/$1"
+    print_msg "Create Helm Chart Archives"
+    rm -f *.tar.gz
+    tar -czf rb_profile.tar.gz -C $test_folder/vnfs/edgex/profile .
+    tar -czf rb_definition.tar.gz -C $test_folder/vnfs/edgex/helm edgex
+    popd
+}
+
+# populate_CSAR_fw_rbdefinition() - Function that populates CSAR folder
+# for testing resource bundle definition of firewall scenario
+function populate_CSAR_fw_rbdefinition {
+    _checks_args "$1"
+    pushd "${CSAR_DIR}/$1"
+    print_msg "Create Helm Chart Archives for vFirewall"
+    rm -f *.tar.gz
+    # Reuse profile from the edgeX case as it is an empty profile
+    tar -czf rb_profile.tar.gz -C $test_folder/vnfs/edgex/profile .
+    tar -czf rb_definition.tar.gz -C $test_folder/../demo firewall
+    popd
+}
+
+function populate_CSAR_composite_app_helm {
+    _checks_args "$1"
+    pushd "${CSAR_DIR}/$1"
+    print_msg "Create Helm Chart Archives for compositeApp"
+    rm -f *.tar.gz
+    tar -czf collectd.tar.gz -C $test_folder/vnfs/comp-app/collection/app1/helm .
+    tar -czf prometheus.tar.gz -C $test_folder/vnfs/comp-app/collection/app2/helm .
+    tar -czf collectd_profile.tar.gz -C $test_folder/vnfs/comp-app/collection/app1/profile .
+    tar -czf prometheus_profile.tar.gz -C $test_folder/vnfs/comp-app/collection/app2/profile .
+    popd
+}
+

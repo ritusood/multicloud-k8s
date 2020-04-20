@@ -17,12 +17,13 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
 	"plugin"
 	"strings"
 
-	"k8splugin/internal/config"
-	"k8splugin/internal/db"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/config"
+	"github.com/onap/multicloud-k8s/src/k8splugin/internal/db"
 
 	pkgerrors "github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -51,13 +52,11 @@ func DecodeYAML(path string, into runtime.Object) (runtime.Object, error) {
 		}
 	}
 
-	log.Println("Reading YAML file")
 	rawBytes, err := ioutil.ReadFile(path)
 	if err != nil {
 		return nil, pkgerrors.Wrap(err, "Read YAML file error")
 	}
 
-	log.Println("Decoding deployment YAML")
 	decode := scheme.Codecs.UniversalDeserializer().Decode
 	obj, _, err := decode(rawBytes, nil, into)
 	if err != nil {
@@ -88,7 +87,7 @@ func CheckDatabaseConnection() error {
 	}
 	err = db.NewEtcdClient(nil, c)
 	if err != nil {
-		log.Printf("Etcd Client Initialization failed")
+		log.Printf("Etcd Client Initialization failed with error: %s", err.Error())
 	}
 	return nil
 }
@@ -127,4 +126,15 @@ func CheckInitialSettings() error {
 	}
 
 	return nil
+}
+
+//EnsureDirectory makes sure that the directories specified in the path exist
+//If not, it will create them, if possible.
+func EnsureDirectory(f string) error {
+	base := path.Dir(f)
+	_, err := os.Stat(base)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return os.MkdirAll(base, 0755)
 }
